@@ -227,68 +227,75 @@
 
   /* ── Code panels ── */
   .code-section { margin-bottom: 24px; }
-  .code-section-header {
+  .code-toggle {
     display: flex; align-items: center; gap: 10px;
     padding: 10px 16px; background: var(--surface);
     border: 1px solid var(--border); border-radius: 8px;
-    cursor: pointer; user-select: none;
-    transition: border-color .15s;
+    cursor: pointer; user-select: none; transition: border-color .15s;
   }
-  .code-section-header:hover { border-color: var(--border2); }
-  .code-section-header.open { border-radius: 8px 8px 0 0; border-bottom-color: transparent; }
-  .code-section-title { font-family: var(--mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
-  .code-section-sub { font-family: var(--mono); font-size: 10px; color: var(--dim); }
+  .code-toggle:hover { border-color: var(--border2); }
+  .code-toggle.open { border-radius: 8px 8px 0 0; border-bottom-color: var(--border); }
+  .code-toggle-title { font-family: var(--mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  .code-toggle-sub { font-family: var(--mono); font-size: 10px; color: var(--dim); }
   .code-chevron { font-size: 10px; color: var(--dim); margin-left: auto; transition: transform .2s; }
-  .code-section-header.open .code-chevron { transform: rotate(180deg); }
+  .code-toggle.open .code-chevron { transform: rotate(180deg); }
+
   .code-panels-wrap {
-    display: none; grid-template-columns: 1fr 1fr; gap: 0;
+    display: none; grid-template-columns: 1fr 1fr;
     background: var(--surface); border: 1px solid var(--border);
     border-top: none; border-radius: 0 0 8px 8px; overflow: hidden;
   }
   .code-panels-wrap.open { display: grid; }
-  .code-panel-col { display: flex; flex-direction: column; border-right: 1px solid var(--border); }
-  .code-panel-col:last-child { border-right: none; }
-  .code-panel-header {
+
+  .code-col { display: flex; flex-direction: column; }
+  .code-col:first-child { border-right: 1px solid var(--border); }
+
+  .code-col-header {
     padding: 10px 16px; border-bottom: 1px solid var(--border);
     background: var(--surface2); display: flex; align-items: center; gap: 8px;
+    flex-shrink: 0;
   }
-  .code-panel-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-  .code-panel-dot.alice { background: var(--alice); box-shadow: 0 0 5px var(--alice); }
-  .code-panel-dot.bob   { background: var(--bob);   box-shadow: 0 0 5px var(--bob); }
-  .code-panel-name { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
-  .code-panel-name.alice { color: var(--alice); }
-  .code-panel-name.bob   { color: var(--bob); }
-  .code-panel-role { font-family: var(--mono); font-size: 10px; color: var(--dim); }
-  .code-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); }
-  .code-tab {
-    font-family: var(--mono); font-size: 10px; padding: 6px 14px;
-    color: var(--dim); cursor: pointer; border-bottom: 2px solid transparent;
-    transition: color .15s, border-color .15s;
-  }
-  .code-tab:hover { color: var(--muted); }
-  .code-tab.active { color: var(--text); border-bottom-color: var(--muted); }
-  .code-tab.active.alice { color: var(--alice); border-bottom-color: var(--alice); }
-  .code-tab.active.bob   { color: var(--bob);   border-bottom-color: var(--bob); }
-  .code-body { padding: 16px; overflow-x: auto; flex: 1; }
-  .code-body::-webkit-scrollbar { height: 3px; }
-  .code-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
-  pre.code-pre { margin: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.75; white-space: pre; }
-  .cl { display: block; border-radius: 3px; padding: 0 4px; margin: 0 -4px; transition: background .25s; }
-  .cl.hl { background: rgba(255,255,255,.06); }
-  .cl.hl-alice { background: rgba(56,189,248,.1); }
-  .cl.hl-bob   { background: rgba(74,222,128,.1); }
-  /* Syntax colors */
-  .kw  { color: #c792ea; }   /* keywords: async, await, const, return */
-  .fn  { color: #82aaff; }   /* function calls */
-  .fn-alice { color: var(--alice); }
-  .fn-bob   { color: var(--bob); }
-  .str { color: #c3e88d; }   /* strings */
-  .num { color: #f78c6c; }   /* numbers */
-  .cmt { color: var(--dim); font-style: italic; }  /* comments */
-  .var { color: var(--text); }
-  .op  { color: var(--muted); }
-  .type-annot { color: #ffcb6b; }
+  .code-col-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .code-col-dot.alice { background: var(--alice); box-shadow: 0 0 5px var(--alice); }
+  .code-col-dot.bob   { background: var(--bob);   box-shadow: 0 0 5px var(--bob); }
+  .code-col-name { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+  .code-col-name.alice { color: var(--alice); }
+  .code-col-name.bob   { color: var(--bob); }
+  .code-col-role { font-family: var(--mono); font-size: 10px; color: var(--dim); }
 
+  .code-scroll {
+    overflow-y: auto; max-height: 480px;
+    padding: 14px 0;
+  }
+  .code-scroll::-webkit-scrollbar { width: 3px; }
+  .code-scroll::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+  pre.code-src {
+    margin: 0; font-family: var(--mono); font-size: 11.5px;
+    line-height: 1.7; white-space: pre; padding: 0 16px;
+  }
+
+  /* Each line is a span.cl — highlighted by action */
+  .cl { display: block; border-radius: 2px; padding: 0 4px; margin: 0 -4px; transition: background .3s; }
+  .cl.hl-alice { background: rgba(56,189,248,.12); }
+  .cl.hl-bob   { background: rgba(74,222,128,.12); }
+
+  /* Section dividers inside the source */
+  .code-section-comment {
+    display: block; margin: 6px 16px 2px;
+    font-family: var(--mono); font-size: 10px;
+    color: var(--border2); border-top: 1px solid var(--border);
+    padding-top: 8px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .code-section-comment:first-child { margin-top: 0; border-top: none; padding-top: 0; }
+
+  /* Syntax tokens */
+  .kw  { color: #c792ea; }
+  .fn  { color: #82aaff; }
+  .str { color: #c3e88d; }
+  .num { color: #f78c6c; }
+  .cmt { color: var(--dim); font-style: italic; }
+  .prop { color: #89ddff; }
 </style>
 </head>
 <body>
@@ -461,47 +468,35 @@
   </div>
 
 
+
   <!-- ── Code panels ─────────────────────────────────────────── -->
   <div class="code-section">
-    <div class="code-section-header" id="codeToggle" onclick="toggleCode()">
-      <span class="code-section-title">How it works in code</span>
-      <span class="code-section-sub">see the full API for both sides · 8–12 lines each · no boilerplate</span>
+    <div class="code-toggle" id="codeToggle" onclick="toggleCode()">
+      <span class="code-toggle-title">How it works in code</span>
+      <span class="code-toggle-sub">full program for both sides · ~50 lines total · active block highlights as demo runs</span>
       <span class="code-chevron" id="codeChevron">▼</span>
     </div>
     <div class="code-panels-wrap" id="codePanels">
-
-      <!-- Alice -->
-      <div class="code-panel-col">
-        <div class="code-panel-header">
-          <span class="code-panel-dot alice"></span>
-          <span class="code-panel-name alice">Alice</span>
-          <span class="code-panel-role">initiator — sends the first message</span>
+      <div class="code-col" id="alice-code-col">
+        <div class="code-col-header">
+          <span class="code-col-dot alice"></span>
+          <span class="code-col-name alice">Alice</span>
+          <span class="code-col-role">initiator — sends the PreKeyMessage</span>
         </div>
-        <div class="code-tabs">
-          <span class="code-tab active alice" onclick="showCodeTab('alice','session')" id="alice-tab-session">Session setup</span>
-          <span class="code-tab" onclick="showCodeTab('alice','encrypt')" id="alice-tab-encrypt">Encrypt</span>
-          <span class="code-tab" onclick="showCodeTab('alice','decrypt')" id="alice-tab-decrypt">Decrypt</span>
-          <span class="code-tab" onclick="showCodeTab('alice','pin')" id="alice-tab-pin">Fingerprint</span>
+        <div class="code-scroll" id="alice-code-scroll">
+          <pre class="code-src" id="alice-code-src"></pre>
         </div>
-        <div class="code-body" id="alice-code-body"></div>
       </div>
-
-      <!-- Bob -->
-      <div class="code-panel-col">
-        <div class="code-panel-header">
-          <span class="code-panel-dot bob"></span>
-          <span class="code-panel-name bob">Bob</span>
-          <span class="code-panel-role">responder — receives and replies</span>
+      <div class="code-col" id="bob-code-col">
+        <div class="code-col-header">
+          <span class="code-col-dot bob"></span>
+          <span class="code-col-name bob">Bob</span>
+          <span class="code-col-role">responder — receives and replies</span>
         </div>
-        <div class="code-tabs">
-          <span class="code-tab active bob" onclick="showCodeTab('bob','session')" id="bob-tab-session">Session setup</span>
-          <span class="code-tab" onclick="showCodeTab('bob','encrypt')" id="bob-tab-encrypt">Encrypt</span>
-          <span class="code-tab" onclick="showCodeTab('bob','decrypt')" id="bob-tab-decrypt">Decrypt</span>
-          <span class="code-tab" onclick="showCodeTab('bob','pin')" id="bob-tab-pin">Fingerprint</span>
+        <div class="code-scroll" id="bob-code-scroll">
+          <pre class="code-src" id="bob-code-src"></pre>
         </div>
-        <div class="code-body" id="bob-code-body"></div>
       </div>
-
     </div>
   </div>
 
@@ -5286,8 +5281,10 @@ async function autoDemo() {
     markStep(i+1, 'done');
   }
 
-  setStatus('Auto demo complete — ' + (S.epochCount) + ' KEM ratchet epochs, ' + wireEntryCount + ' wire events · try typing your own messages now', 'ok');
+  // Collapse progress bar and reveal manual controls
+  document.getElementById('autoProgress').classList.remove('show');
   document.getElementById('autoBtn').disabled = false;
+  setStatus('Auto demo complete — ' + (S.epochCount) + ' KEM ratchet epochs, ' + wireEntryCount + ' wire events · type your own messages above', 'ok');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -5327,309 +5324,241 @@ function resetDemo() {
 }
 
 
+
 // ═══════════════════════════════════════════════════════════
-// Code panels
+// Code panels — single scrolling source per side
 // ═══════════════════════════════════════════════════════════
 
-// Current active tab per panel
-const codeTabs = { alice: 'session', bob: 'session' };
+// Full annotated source for each actor.
+// Lines are objects: { id, code }
+// id is used for block highlighting — multiple lines share an id.
+// Section dividers use { divider: 'Label' }.
 
-// Line IDs to highlight when that action runs
-// Format: { action: { alice: [lineId,...], bob: [lineId,...] } }
-const CODE_HIGHLIGHTS = {
-  establish:  { alice: ['al-gen','al-init','al-sess'], bob: ['bl-gen','bl-bundle','bl-sess'] },
-  encrypt_alice: { alice: ['al-enc'], bob: [] },
-  decrypt_alice: { alice: [], bob: ['bl-dec'] },
-  encrypt_bob:   { alice: [], bob: ['bl-enc'] },
-  decrypt_bob:   { alice: ['al-dec'], bob: [] },
-  pin:           { alice: ['al-pin'], bob: ['bl-pin'] },
+const SRC = {
+  alice: [
+    { div: 'Import' },
+    { id:'a-import', code:`import { generateIdentity, createSessionInitiator,` },
+    { id:'a-import', code:`  marshalPreKeyMessageWire, marshalMessageProtocol,` },
+    { id:'a-import', code:`  marshalSignedMessage, unmarshalSignedMessage,` },
+    { id:'a-import', code:`  buildHMACInput, hmacSHA256 } from 'pqc-ratchet';` },
+    { div: 'Generate identity (once — persist to storage)' },
+    { id:'a-gen', code:`const alice = await generateIdentity(` },
+    { id:'a-gen', code:`  1,   // registration id` },
+    { id:'a-gen', code:`  2,   // signed pre-keys to generate` },
+    { id:'a-gen', code:`  5    // one-time pre-keys to generate` },
+    { id:'a-gen', code:`);` },
+    { div: 'Build session from Bob's public bundle' },
+    { id:'a-sess', code:`const bundle = await fetchBobBundle();  // from key server` },
+    { id:'a-sess', code:`` },
+    { id:'a-sess', code:`const { session, preKeyMessage } =` },
+    { id:'a-sess', code:`  await createSessionInitiator(alice, bundle);` },
+    { id:'a-sess', code:`` },
+    { id:'a-sess', code:`await sendToBob(marshalPreKeyMessageWire(preKeyMessage));` },
+    { div: 'Session fingerprint — verify with Bob out-of-band' },
+    { id:'a-pin', code:`// SHA-256(aliceExPub ∥ bobExPub)[0..3] — same on both sides` },
+    { id:'a-pin', code:`const hash = await crypto.subtle.digest('SHA-256',` },
+    { id:'a-pin', code:`  new Uint8Array([...alice.exchangeKey.publicKey,` },
+    { id:'a-pin', code:`                  ...bundle.identityExchangePub]));` },
+    { id:'a-pin', code:`const pin = [...new Uint8Array(hash).slice(0,4)]` },
+    { id:'a-pin', code:`  .map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();` },
+    { id:'a-pin', code:`// → "8A3FC291"  (Bob sees the same value — MITM changes it)` },
+    { div: 'Encrypt a message' },
+    { id:'a-enc', code:`const enc = await session.encryptMessage(` },
+    { id:'a-enc', code:`  new TextEncoder().encode('Hello Bob')` },
+    { id:'a-enc', code:`);` },
+    { id:'a-enc', code:`` },
+    { id:'a-enc', code:`const inner  = marshalMessageProtocol(enc);` },
+    { id:'a-enc', code:`const hmacIn = buildHMACInput(session.ad,` },
+    { id:'a-enc', code:`  session.initiatorSigningKeyBytes,` },
+    { id:'a-enc', code:`  session.responderSigningKeyBytes, inner);` },
+    { id:'a-enc', code:`const sig    = await hmacSHA256(enc.hmacKey, hmacIn);` },
+    { id:'a-enc', code:`await sendToBob(marshalSignedMessage(inner, sig));` },
+    { id:'a-enc', code:`// enc.ratchetCT is non-null on first send of a new epoch:` },
+    { id:'a-enc', code:`//   fresh ML-KEM-768 encapsulation, advancing the ratchet` },
+    { div: 'Decrypt Bob's reply' },
+    { id:'a-dec', code:`const sm = unmarshalSignedMessage(await receiveFromBob());` },
+    { id:'a-dec', code:`` },
+    { id:'a-dec', code:`const plain = await session.decryptMessage(` },
+    { id:'a-dec', code:`  sm.message.counter,` },
+    { id:'a-dec', code:`  sm.message.senderRatchetPub,` },
+    { id:'a-dec', code:`  sm.message.ratchetCT,   // null if same epoch` },
+    { id:'a-dec', code:`  sm.message.ciphertext,` },
+    { id:'a-dec', code:`  sm.hmacSig, sm.messageRaw` },
+    { id:'a-dec', code:`);` },
+    { id:'a-dec', code:`// HMAC verified, ratchet advanced, state rolled back on failure` },
+  ],
+
+  bob: [
+    { div: 'Import' },
+    { id:'b-import', code:`import { generateIdentity, createSessionResponder,` },
+    { id:'b-import', code:`  unmarshalPreKeyMessageWire, marshalMessageProtocol,` },
+    { id:'b-import', code:`  marshalSignedMessage, unmarshalSignedMessage,` },
+    { id:'b-import', code:`  buildHMACInput, hmacSHA256 } from 'pqc-ratchet';` },
+    { div: 'Generate identity (once — publish bundle to key server)' },
+    { id:'b-gen', code:`const bob = await generateIdentity(2, 2, 5);` },
+    { id:'b-gen', code:`` },
+    { id:'b-gen', code:`// Publish this bundle for Alice to fetch:` },
+    { id:'b-gen', code:`publish({` },
+    { id:'b-gen', code:`  registrationId:      bob.id,` },
+    { id:'b-gen', code:`  identitySigningPub:  bob.signingKey.publicKey,` },
+    { id:'b-gen', code:`  identityExchangePub: bob.exchangeKey.publicKey,` },
+    { id:'b-gen', code:`  signedPreKeyPub:     bob.signedPreKeys[0].publicKey,` },
+    { id:'b-gen', code:`  signedPreKeySig:     bob.signedPreKeySigs[0],` },
+    { id:'b-gen', code:`  oneTimePreKeyPub:    bob.preKeys[0].publicKey,` },
+    { id:'b-gen', code:`});` },
+    { div: 'Establish session from Alice's PreKeyMessage' },
+    { id:'b-sess', code:`const pkmBytes = await receiveFromAlice();` },
+    { id:'b-sess', code:`const pkm = unmarshalPreKeyMessageWire(pkmBytes);` },
+    { id:'b-sess', code:`` },
+    { id:'b-sess', code:`const session = await createSessionResponder(bob, pkm);` },
+    { id:'b-sess', code:`// Both sides now share the same root key — nothing was transmitted` },
+    { div: 'Session fingerprint — same value as Alice' },
+    { id:'b-pin', code:`const hash = await crypto.subtle.digest('SHA-256',` },
+    { id:'b-pin', code:`  new Uint8Array([...pkm.identityExchangePub,` },
+    { id:'b-pin', code:`                  ...bob.exchangeKey.publicKey]));` },
+    { id:'b-pin', code:`const pin = [...new Uint8Array(hash).slice(0,4)]` },
+    { id:'b-pin', code:`  .map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase();` },
+    { id:'b-pin', code:`// → "8A3FC291"  (matches Alice — confirm before trusting)` },
+    { div: 'Decrypt Alice's message' },
+    { id:'b-dec', code:`const sm = unmarshalSignedMessage(await receiveFromAlice());` },
+    { id:'b-dec', code:`` },
+    { id:'b-dec', code:`const plain = await session.decryptMessage(` },
+    { id:'b-dec', code:`  sm.message.counter,` },
+    { id:'b-dec', code:`  sm.message.senderRatchetPub,` },
+    { id:'b-dec', code:`  sm.message.ratchetCT,` },
+    { id:'b-dec', code:`  sm.message.ciphertext,` },
+    { id:'b-dec', code:`  sm.hmacSig, sm.messageRaw` },
+    { id:'b-dec', code:`);` },
+    { div: 'Encrypt a reply (first reply triggers new KEM epoch)' },
+    { id:'b-enc', code:`const enc = await session.encryptMessage(` },
+    { id:'b-enc', code:`  new TextEncoder().encode('Hi Alice!')` },
+    { id:'b-enc', code:`);` },
+    { id:'b-enc', code:`// enc.ratchetCT != null: Bob generated a fresh ML-KEM-768` },
+    { id:'b-enc', code:`// keypair and encapsulated — Alice decapsulates to advance` },
+    { id:'b-enc', code:`` },
+    { id:'b-enc', code:`const inner  = marshalMessageProtocol(enc);` },
+    { id:'b-enc', code:`const hmacIn = buildHMACInput(session.ad,` },
+    { id:'b-enc', code:`  session.initiatorSigningKeyBytes,` },
+    { id:'b-enc', code:`  session.responderSigningKeyBytes, inner);` },
+    { id:'b-enc', code:`const sig    = await hmacSHA256(enc.hmacKey, hmacIn);` },
+    { id:'b-enc', code:`await sendToAlice(marshalSignedMessage(inner, sig));` },
+  ],
+};
+
+// Map action name → { alice: [ids], bob: [ids] }
+const CODE_HL = {
+  establish:     { alice: ['a-gen','a-sess'], bob: ['b-gen','b-sess'] },
+  pin:           { alice: ['a-pin'],          bob: ['b-pin'] },
+  encrypt_alice: { alice: ['a-enc'],          bob: [] },
+  decrypt_alice: { alice: [],                 bob: ['b-dec'] },
+  encrypt_bob:   { alice: [],                 bob: ['b-enc'] },
+  decrypt_bob:   { alice: ['a-dec'],          bob: [] },
 };
 
 // ── Syntax highlighter ────────────────────────────────────
-// Minimal token-based highlighter for display-only JS
-function highlight(code) {
-  // Process line by line to support per-line spans
-  // Inline escHtml to avoid ordering dependency
-  const _esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-  return code.split('\n').map(line => {
-    let h = _esc(line);
-    // Order matters: comments first (greedy), then strings, then keywords/fns
-    h = h.replace(/(\/\/.*)/g, '<span class="cmt">$1</span>');
-    h = h.replace(/(&#39;[^&#]*&#39;|&quot;[^&]*&quot;|`[^`]*`)/g,
-                  '<span class="str">$1</span>');
-    h = h.replace(/\b(async|await|const|let|return|if|throw|new|import|export|from|of|true|false|null)\b/g,
-                  '<span class="kw">$1</span>');
-    h = h.replace(/\b(generateIdentity|createSessionInitiator|createSessionResponder)\b/g,
-                  '<span class="fn">$1</span>');
-    h = h.replace(/\b(encryptMessage|decryptMessage)\b/g,
-                  '<span class="fn">$1</span>');
-    h = h.replace(/\b(computeFingerprint|sha256|TextEncoder|TextDecoder)\b/g,
-                  '<span class="fn">$1</span>');
-    h = h.replace(/\b([0-9]+)\b/g, '<span class="num">$1</span>');
-    return h;
-  }).join('\n');
+function hlCode(code) {
+  const esc = s => s
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  let h = esc(code);
+  h = h.replace(/(\/\/.*)/g, '<span class="cmt">$1</span>');
+  h = h.replace(/(&#39;[^&#39;]*&#39;|`[^`]*`)/g, '<span class="str">$1</span>');
+  h = h.replace(/\b(async|await|const|let|return|new|import|from|of|true|false|null)\b/g,
+    '<span class="kw">$1</span>');
+  h = h.replace(/\b(generateIdentity|createSessionInitiator|createSessionResponder|unmarshalPreKeyMessageWire|marshalPreKeyMessageWire|marshalMessageProtocol|marshalSignedMessage|unmarshalSignedMessage|buildHMACInput|hmacSHA256|encryptMessage|decryptMessage|publish|fetchBobBundle|receiveFromAlice|receiveFromBob|sendToBob|sendToAlice)\b/g,
+    '<span class="fn">$1</span>');
+  h = h.replace(/\.([a-zA-Z_][a-zA-Z0-9_]*)/g,
+    '.<span class="prop">$1</span>');
+  h = h.replace(/\b([0-9]+)\b/g, '<span class="num">$1</span>');
+  return h;
 }
 
-// ── Code snippets ─────────────────────────────────────────
-// Each snippet is an array of { id, code } lines
-// id is used for per-line highlighting
-
-const SNIPPETS = {
-  alice: {
-    session: [
-      { id:'al-import', code:`import { generateIdentity,` },
-      { id:'',          code:`  createSessionInitiator } from 'pqc-ratchet';` },
-      { id:'',          code:`` },
-      { id:'al-gen',    code:`// Generate Alice's identity once; persist it` },
-      { id:'al-gen',    code:`const alice = await generateIdentity(` },
-      { id:'al-gen',    code:`  1,   // id` },
-      { id:'al-gen',    code:`  2,   // signed pre-keys` },
-      { id:'al-gen',    code:`  5    // one-time pre-keys` },
-      { id:'al-gen',    code:`);` },
-      { id:'',          code:`` },
-      { id:'al-init',   code:`// Fetch Bob's public bundle from a directory` },
-      { id:'al-init',   code:`const bundle = await fetchBobBundle();` },
-      { id:'',          code:`` },
-      { id:'al-sess',   code:`// Run X3DH — produces session + PreKeyMessage` },
-      { id:'al-sess',   code:`const { session, preKeyMessage } =` },
-      { id:'al-sess',   code:`  await createSessionInitiator(alice, bundle);` },
-      { id:'',          code:`` },
-      { id:'al-sess',   code:`// Send preKeyMessage to Bob out-of-band` },
-      { id:'al-sess',   code:`await send(preKeyMessage);` },
-    ],
-    encrypt: [
-      { id:'al-enc',    code:`// Encrypt — ratchet advances automatically` },
-      { id:'al-enc',    code:`const enc = await session.encryptMessage(` },
-      { id:'al-enc',    code:`  new TextEncoder().encode('Hello Bob')` },
-      { id:'al-enc',    code:`);` },
-      { id:'',          code:`` },
-      { id:'al-enc',    code:`// enc contains:` },
-      { id:'al-enc',    code:`//   counter        message sequence number` },
-      { id:'al-enc',    code:`//   ciphertext     AES-256-GCM encrypted bytes` },
-      { id:'al-enc',    code:`//   newRatchetPub  ML-KEM-768 + X25519 pub key` },
-      { id:'al-enc',    code:`//   ratchetCT      KEM ciphertext (new epoch only)` },
-      { id:'al-enc',    code:`//   hmacKey        for outer HMAC-SHA-256` },
-      { id:'',          code:`` },
-      { id:'al-enc',    code:`// Wire it up` },
-      { id:'al-enc',    code:`const wire = marshalSignedMessage(` },
-      { id:'al-enc',    code:`  marshalMessageProtocol(enc), hmacSig` },
-      { id:'al-enc',    code:`);` },
-      { id:'al-enc',    code:`await send(wire); // ~1.2 KB per message` },
-    ],
-    decrypt: [
-      { id:'al-dec',    code:`// Receive Bob's reply (already wire-decoded)` },
-      { id:'al-dec',    code:`const sm = unmarshalSignedMessage(wireBytes);` },
-      { id:'',          code:`` },
-      { id:'al-dec',    code:`// Decrypt — HMAC verified, ratchet advanced` },
-      { id:'al-dec',    code:`const plainBytes = await session.decryptMessage(` },
-      { id:'al-dec',    code:`  sm.message.counter,` },
-      { id:'al-dec',    code:`  sm.message.senderRatchetPub,` },
-      { id:'al-dec',    code:`  sm.message.ratchetCT,    // null if same epoch` },
-      { id:'al-dec',    code:`  sm.message.ciphertext,` },
-      { id:'al-dec',    code:`  sm.hmacSig,` },
-      { id:'al-dec',    code:`  sm.messageRaw` },
-      { id:'al-dec',    code:`);` },
-      { id:'',          code:`` },
-      { id:'al-dec',    code:`const text = new TextDecoder().decode(plainBytes);` },
-    ],
-    pin: [
-      { id:'al-pin',    code:`// Session fingerprint (Identity Binding PIN)` },
-      { id:'al-pin',    code:`// SHA-256 of both exchange public keys.` },
-      { id:'al-pin',    code:`// Both sides compute the same value —` },
-      { id:'al-pin',    code:`// verify out-of-band to confirm identity binding.` },
-      { id:'',          code:`` },
-      { id:'al-pin',    code:`async function computeFingerprint(` },
-      { id:'al-pin',    code:`  aliceExPub,   // alice.exchangeKey.publicKey` },
-      { id:'al-pin',    code:`  bobExPub      // bob.exchangeKey.publicKey` },
-      { id:'al-pin',    code:`) {` },
-      { id:'al-pin',    code:`  const combined = new Uint8Array([` },
-      { id:'al-pin',    code:`    ...aliceExPub, ...bobExPub` },
-      { id:'al-pin',    code:`  ]);` },
-      { id:'al-pin',    code:`  const hash = await crypto.subtle.digest(` },
-      { id:'al-pin',    code:`    'SHA-256', combined` },
-      { id:'al-pin',    code:`  );` },
-      { id:'al-pin',    code:`  // Display first 4 bytes as 8 hex digits` },
-      { id:'al-pin',    code:`  return Array.from(new Uint8Array(hash).slice(0,4))` },
-      { id:'al-pin',    code:`    .map(b => b.toString(16).padStart(2,'0'))` },
-      { id:'al-pin',    code:`    .join('').toUpperCase();` },
-      { id:'al-pin',    code:`  // → "8A3FC291"  (same on both sides)` },
-      { id:'al-pin',    code:`}` },
-    ],
-  },
-
-  bob: {
-    session: [
-      { id:'bl-import', code:`import { generateIdentity,` },
-      { id:'',          code:`  createSessionResponder } from 'pqc-ratchet';` },
-      { id:'',          code:`` },
-      { id:'bl-gen',    code:`// Generate Bob's identity once; persist it` },
-      { id:'bl-gen',    code:`const bob = await generateIdentity(2, 2, 5);` },
-      { id:'',          code:`` },
-      { id:'bl-bundle', code:`// Publish Bob's public bundle to a directory` },
-      { id:'bl-bundle', code:`const bundle = {` },
-      { id:'bl-bundle', code:`  registrationId:     bob.id,` },
-      { id:'bl-bundle', code:`  identitySigningPub: bob.signingKey.publicKey,` },
-      { id:'bl-bundle', code:`  identityExchangePub:bob.exchangeKey.publicKey,` },
-      { id:'bl-bundle', code:`  signedPreKeyPub:    bob.signedPreKeys[0].publicKey,` },
-      { id:'bl-bundle', code:`  signedPreKeySig:    bob.signedPreKeySigs[0],` },
-      { id:'bl-bundle', code:`  oneTimePreKeyPub:   bob.preKeys[0].publicKey,` },
-      { id:'bl-bundle', code:`  // ... serve this from your key server` },
-      { id:'bl-bundle', code:`};` },
-      { id:'',          code:`` },
-      { id:'bl-sess',   code:`// When Alice's PreKeyMessage arrives:` },
-      { id:'bl-sess',   code:`const session =` },
-      { id:'bl-sess',   code:`  await createSessionResponder(bob, preKeyMessage);` },
-      { id:'',          code:`` },
-      { id:'bl-sess',   code:`// Session established — same root key as Alice` },
-    ],
-    encrypt: [
-      { id:'bl-enc',    code:`// Encrypt Bob's reply` },
-      { id:'bl-enc',    code:`// First reply triggers a new KEM ratchet step:` },
-      { id:'bl-enc',    code:`//   Bob encapsulates a new shared secret,` },
-      { id:'bl-enc',    code:`//   sends ratchetCT, advances to next epoch.` },
-      { id:'',          code:`` },
-      { id:'bl-enc',    code:`const enc = await session.encryptMessage(` },
-      { id:'bl-enc',    code:`  new TextEncoder().encode('Hi Alice!')` },
-      { id:'bl-enc',    code:`);` },
-      { id:'',          code:`` },
-      { id:'bl-enc',    code:`// enc.ratchetCT is non-null on first reply:` },
-      { id:'bl-enc',    code:`//   new KEM ciphertext for the epoch change` },
-      { id:'bl-enc',    code:`//   Alice decapsulates it to derive same chain` },
-      { id:'',          code:`` },
-      { id:'bl-enc',    code:`const wire = marshalSignedMessage(` },
-      { id:'bl-enc',    code:`  marshalMessageProtocol(enc), hmacSig` },
-      { id:'bl-enc',    code:`);` },
-    ],
-    decrypt: [
-      { id:'bl-dec',    code:`// Receive Alice's message` },
-      { id:'bl-dec',    code:`const sm = unmarshalSignedMessage(wireBytes);` },
-      { id:'',          code:`` },
-      { id:'bl-dec',    code:`// decryptMessage:` },
-      { id:'bl-dec',    code:`//  1. Derives message key from chain` },
-      { id:'bl-dec',    code:`//  2. Verifies outer HMAC-SHA-256` },
-      { id:'bl-dec',    code:`//     (rolls back state on failure)` },
-      { id:'bl-dec',    code:`//  3. Decrypts with AES-256-GCM` },
-      { id:'',          code:`` },
-      { id:'bl-dec',    code:`const plainBytes = await session.decryptMessage(` },
-      { id:'bl-dec',    code:`  sm.message.counter,` },
-      { id:'bl-dec',    code:`  sm.message.senderRatchetPub,` },
-      { id:'bl-dec',    code:`  sm.message.ratchetCT,` },
-      { id:'bl-dec',    code:`  sm.message.ciphertext,` },
-      { id:'bl-dec',    code:`  sm.hmacSig,` },
-      { id:'bl-dec',    code:`  sm.messageRaw` },
-      { id:'bl-dec',    code:`);` },
-    ],
-    pin: [
-      { id:'bl-pin',    code:`// Same fingerprint function as Alice —` },
-      { id:'bl-pin',    code:`// SHA-256(aliceExPub || bobExPub)[0..3]` },
-      { id:'bl-pin',    code:`// Both sides produce identical output.` },
-      { id:'',          code:`` },
-      { id:'bl-pin',    code:`const fp = await computeFingerprint(` },
-      { id:'bl-pin',    code:`  preKeyMessage.identityExchangePub, // Alice` },
-      { id:'bl-pin',    code:`  bob.exchangeKey.publicKey          // Bob` },
-      { id:'bl-pin',    code:`);` },
-      { id:'',          code:`` },
-      { id:'bl-pin',    code:`// Display fp to the user:` },
-      { id:'bl-pin',    code:`// "8A3F-C291"` },
-      { id:'',          code:`` },
-      { id:'bl-pin',    code:`// User visually confirms it matches Alice's` },
-      { id:'bl-pin',    code:`// display, then clicks "Approve". This proves` },
-      { id:'bl-pin',    code:`// both sides share the same identity keys —` },
-      { id:'bl-pin',    code:`// a MITM would produce a different value.` },
-    ],
-  },
-};
-
-function renderCodeBody(who, tab) {
-  const lines = SNIPPETS[who][tab];
-  const html = lines.map(({ id, code }) => {
-    const cls = id ? ` data-lid="${id}"` : '';
-    return `<span class="cl" ${cls}>${highlight(code) || '&nbsp;'}</span>`;
-  }).join('\n');
-  return `<pre class="code-pre">${html}</pre>`;
+// ── Render a source panel ──────────────────────────────────
+function renderSrc(who) {
+  const pre = document.getElementById(who + '-code-src');
+  if (!pre) return;
+  let html = '';
+  for (const line of SRC[who]) {
+    if (line.div !== undefined) {
+      html += `<span class="code-section-comment">${line.div}</span>`;
+      continue;
+    }
+    const idAttr = line.id ? ` data-lid="${line.id}"` : '';
+    html += `<span class="cl"${idAttr}>${hlCode(line.code) || '&nbsp;'}</span>\n`;
+  }
+  pre.innerHTML = html;
 }
 
-function showCodeTab(who, tab) {
-  codeTabs[who] = tab;
-  // Update tab active state
-  ['session','encrypt','decrypt','pin'].forEach(t => {
-    const el = document.getElementById(`${who}-tab-${t}`);
-    if (el) el.className = 'code-tab' + (t === tab ? ` active ${who}` : '');
-  });
-  // Render body
-  const body = document.getElementById(`${who}-code-body`);
-  if (body) body.innerHTML = renderCodeBody(who, tab);
-}
-
+// ── Toggle panel open/closed ───────────────────────────────
 function toggleCode() {
-  const hdr = document.getElementById('codeToggle');
   const wrap = document.getElementById('codePanels');
+  const hdr  = document.getElementById('codeToggle');
   const open = wrap.classList.toggle('open');
   hdr.classList.toggle('open', open);
-  if (open && !document.getElementById('alice-code-body').innerHTML) {
-    // First open — render default tabs
-    showCodeTab('alice', 'session');
-    showCodeTab('bob',   'session');
+  if (open) {
+    if (!document.getElementById('alice-code-src').innerHTML) {
+      renderSrc('alice');
+      renderSrc('bob');
+    }
   }
 }
 
-// Highlight code lines for a given action
+// ── Highlight a block ──────────────────────────────────────
 function highlightCodeLines(action) {
-  const map = CODE_HIGHLIGHTS[action];
+  const map = CODE_HL[action];
   if (!map) return;
 
-  // Open the code panel if it's closed — let users see live progression
+  // Open the panel if closed so users see live progression
   const wrap = document.getElementById('codePanels');
   const hdr  = document.getElementById('codeToggle');
   if (wrap && !wrap.classList.contains('open')) {
     wrap.classList.add('open');
     hdr && hdr.classList.add('open');
-    // Render default tabs on first open if not already done
-    if (!document.getElementById('alice-code-body').innerHTML) {
-      showCodeTab('alice', 'session');
-      showCodeTab('bob',   'session');
+    if (!document.getElementById('alice-code-src').innerHTML) {
+      renderSrc('alice');
+      renderSrc('bob');
     }
   }
 
   for (const who of ['alice','bob']) {
     const ids = map[who] || [];
+    const pre = document.getElementById(who + '-code-src');
+    if (!pre) continue;
+
+    // Remove existing highlights
+    pre.querySelectorAll('.cl').forEach(el =>
+      el.classList.remove('hl-alice','hl-bob')
+    );
+
     if (!ids.length) continue;
 
-    // Find which tab contains these line IDs
-    let targetTab = null;
-    const tabs = Object.keys(SNIPPETS[who]);
-    for (const tab of tabs) {
-      if (SNIPPETS[who][tab].some(l => ids.includes(l.id))) {
-        targetTab = tab;
-        break;
-      }
-    }
-
-    // Switch to the right tab (renders the lines into the DOM)
-    if (targetTab && codeTabs[who] !== targetTab) {
-      showCodeTab(who, targetTab);
-    }
-
-    // Now highlight — lines are guaranteed to be in the DOM
-    const body = document.getElementById(`${who}-code-body`);
-    if (!body) continue;
-    body.querySelectorAll('.cl').forEach(el =>
-      el.classList.remove('hl', 'hl-alice', 'hl-bob')
-    );
+    // Highlight matching lines
+    const cls = 'hl-' + who;
+    let firstEl = null;
     ids.forEach(id => {
-      body.querySelectorAll(`.cl[data-lid="${id}"]`).forEach(el => {
-        el.classList.add('hl', `hl-${who}`);
+      pre.querySelectorAll(`.cl[data-lid="${id}"]`).forEach(el => {
+        el.classList.add(cls);
+        if (!firstEl) firstEl = el;
       });
     });
 
-    // Scroll the first highlighted line into view
-    const first = body.querySelector('.cl.hl');
-    if (first) first.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    // Scroll first highlighted line into view within the scroll container
+    if (firstEl) {
+      const scroller = document.getElementById(who + '-code-scroll');
+      if (scroller) {
+        const elTop    = firstEl.offsetTop;
+        const elHeight = firstEl.offsetHeight;
+        const scrTop   = scroller.scrollTop;
+        const scrH     = scroller.clientHeight;
+        if (elTop < scrTop + 20 || elTop + elHeight > scrTop + scrH - 20) {
+          scroller.scrollTo({ top: elTop - 60, behavior: 'smooth' });
+        }
+      }
+    }
   }
 }
 
-window.toggleCode    = toggleCode;
-window.showCodeTab   = showCodeTab;
+window.toggleCode         = toggleCode;
 window.highlightCodeLines = highlightCodeLines;
 
 window.establish=establish;
