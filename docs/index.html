@@ -5532,13 +5532,16 @@ async function sendMsg(from, text) {
     //   enc.ratchetCT !== null  = a new KEM ciphertext was generated
     //   enc.counter === 0       = first message of this sending chain
     //
-    // This happens when the sender changes direction (Alice→Bob→Alice)
-    // because decryptMessage sets sendingChain=null on the new step,
-    // forcing the next encryptMessage to create a fresh keypair.
+    // A new ratchet turn happens when the sender direction changes
+    // (Alice→Bob or Bob→Alice).  At that point the new sender's session
+    // has already processed the previous sender's ratchet pub via
+    // decryptMessage, which reset sendingChain=null and generated a fresh
+    // KEM keypair — so every direction switch IS a new turn by definition.
     //
-    // We also track S.lastSender to show "direction changed" in the UI.
-    const directionChanged = from !== S.lastSender && S.lastSender !== null;
-    const newEpoch = enc.ratchetCT !== null && enc.counter === 0;
+    // We use this observable demo-side signal rather than inspecting
+    // enc.counter because epochRatchetCT persists across all messages in
+    // an epoch, making enc.ratchetCT !== null always true and unreliable.
+    const newEpoch = from !== S.lastSender && S.lastSender !== null;
     if (newEpoch) S.epochCount++;
     const epoch = S.epochCount;
     S.lastSender = from;
