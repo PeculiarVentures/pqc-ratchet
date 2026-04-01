@@ -5012,7 +5012,8 @@ let S = {
   bobId:      null,
   aliceSess:  null,   // Session  — returned by createSessionInitiator/Responder
   bobSess:    null,
-  epochCount: 0,      // KEM ratchet epoch counter (incremented on new epoch)
+  epochCount: 0,      // KEM ratchet epoch counter (incremented on direction change)
+  lastSender: null,   // track last sender to detect direction changes
   msgSeq:     0,      // sequential message ID for bubble DOM IDs
   wireSeq:    0,      // sequential wire-log entry counter
   sessionPIN: null,   // 8-char hex fingerprint shown to both sides
@@ -5519,10 +5520,15 @@ async function sendMsg(from, text) {
     // Step 4 — wrap in signed envelope
     const wire = marshalSignedMessage(inner, hmacSig);
 
-    // Detect new ratchet epoch: ratchetCT present and counter reset to 0
+    // Detect new ratchet epoch: the sender changed direction.
+    // Each time Alice→Bob or Bob→Alice switches, that's a new KEM epoch
+    // because the new sender generates a fresh ephemeral keypair and
+    // encapsulates against the previous sender's ratchet key.
+    // We track the last sender to detect the switch.
     const newEpoch = enc.ratchetCT !== null && enc.counter === 0;
     if (newEpoch) S.epochCount++;
     const epoch = S.epochCount;
+    S.lastSender = from;  // track for display purposes
     const nowTs = ts();
 
     // Add to wire log
@@ -5619,12 +5625,16 @@ async function sendMsg(from, text) {
 
 const DEMO_SCRIPT = [
   // [sender, message text, pause before sending (ms)]
-  ['alice', 'Hello Bob — testing pqc-ratchet post-quantum messaging', 900],
-  ['alice', 'Second message in epoch 0 — chain key advances, ratchet does not', 900],
-  ['bob',   'Hi Alice! First reply — this triggers a new KEM ratchet step', 1200],
-  ['bob',   'Second reply in epoch 1 — chain key advances again', 900],
-  ['alice', 'Back to Alice — new epoch, new ephemeral ML-KEM-768 keypair', 1200],
-  ['bob',   'Final message — root key changed three times, forward secrecy demonstrated', 1200],
+  // Epoch 0: Alice initiates — uses the X3DH base key as initial ratchet key
+  ['alice', 'Hello Bob — epoch 0, Alice sends first, KEM ratchet not yet advanced', 900],
+  ['alice', 'Second message — still epoch 0, chain key steps forward', 900],
+  // Epoch 1: Bob replies — generates fresh ML-KEM-768 keypair, new epoch starts
+  ['bob',   'First reply — epoch 1, new KEM ratchet step, fresh shared secret', 1200],
+  ['bob',   'Second reply — still epoch 1, chain key steps, ratchet holds', 900],
+  // Epoch 2: Alice replies — generates fresh ML-KEM-768 keypair, new epoch
+  ['alice', 'Alice again — epoch 2, another new KEM ratchet step', 1200],
+  // Epoch 3: Bob replies again — fourth KEM ratchet step
+  ['bob',   'Final — epoch 3, root key derived fresh four times total', 1200],
 ];
 
 // Update the visual step indicator in the auto-demo progress bar
@@ -5684,7 +5694,7 @@ function resetDemo() {
   S = {
     aliceId: null, bobId: null,
     aliceSess: null, bobSess: null,
-    epochCount: 0, msgSeq: 0, wireSeq: 0, sessionPIN: null,
+    epochCount: 0, lastSender: null, msgSeq: 0, wireSeq: 0, sessionPIN: null,
   };
   wireEntryCount = 0;
   bubbleId       = 0;
