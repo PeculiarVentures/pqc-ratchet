@@ -1,9 +1,9 @@
 /**
- * challenge.test.ts — checks computeChallenge against the shared vectors in testdata/.
+ * challenge.test.ts — checks computeChallenge against the shared vectors in go/pqcratchet/testdata/.
  */
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { computeChallenge } from "../index.js";
 
 interface Vector {
@@ -12,10 +12,11 @@ interface Vector {
   pin: string;
 }
 
-// npm test runs from ts/, so the repo-root testdata/ is one level up.
-const { vectors } = JSON.parse(
-  readFileSync(resolve(process.cwd(), "../testdata/challenge_vectors.json"), "utf8"),
-) as { vectors: Vector[] };
+// The vectors live in the Go module so they ship with it; resolve them from this file, not cwd.
+const vectorsPath = fileURLToPath(
+  new URL("../../../go/pqcratchet/testdata/challenge_vectors.json", import.meta.url),
+);
+const { vectors } = JSON.parse(readFileSync(vectorsPath, "utf8")) as { vectors: Vector[] };
 
 const fromHex = (h: string) => Uint8Array.from(Buffer.from(h, "hex"));
 

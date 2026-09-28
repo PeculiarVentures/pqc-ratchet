@@ -11,7 +11,7 @@ import (
 )
 
 func TestComputeChallengeVectors(t *testing.T) {
-	raw, err := os.ReadFile("../../testdata/challenge_vectors.json")
+	raw, err := os.ReadFile("testdata/challenge_vectors.json")
 	if err != nil {
 		t.Fatalf("read vectors: %v", err)
 	}
