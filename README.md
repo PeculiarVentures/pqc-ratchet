@@ -65,8 +65,10 @@ console.log(new TextDecoder().decode(pt)); // "hello"
 
 ### Sending a message (Go)
 
+Install: `go get github.com/PeculiarVentures/pqc-ratchet/go`
+
 ```go
-import pqc "github.com/PeculiarVentures/pqc-ratchet/pqcratchet"
+import pqc "github.com/PeculiarVentures/pqc-ratchet/go/pqcratchet"
 
 aliceID, _ := pqc.GenerateIdentity(1, 2, 10)
 bobID, _   := pqc.GenerateIdentity(2, 2, 10)

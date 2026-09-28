@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"os"
 
-	pqc "github.com/PeculiarVentures/pqc-ratchet/pqcratchet"
+	pqc "github.com/PeculiarVentures/pqc-ratchet/go/pqcratchet"
 )
 
 type Fixture struct {

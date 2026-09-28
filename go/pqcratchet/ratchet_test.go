@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	pqc "github.com/PeculiarVentures/pqc-ratchet/pqcratchet"
+	pqc "github.com/PeculiarVentures/pqc-ratchet/go/pqcratchet"
 )
 
 // ─── KEM tests ────────────────────────────────────────────────────────────────
@@ -561,8 +561,8 @@ func setupSessions(t *testing.T) (alice, bob *pqc.Session) {
 func buildPKMWire(t *testing.T, alice *pqc.Identity, bundle *pqc.PreKeyBundle, result *pqc.KEMInitiatorResult) *pqc.PreKeyMessageWire {
 	t.Helper()
 	m := &pqc.PreKeyMessageWire{
-		RegistrationID:    uint32(alice.ID),
-		SignedPreKeyIndex: uint32(bundle.SignedPreKeyIndex),
+		RegistrationID:     uint32(alice.ID),
+		SignedPreKeyIndex:  uint32(bundle.SignedPreKeyIndex),
 		OneTimePreKeyIndex: 0xFFFFFFFF,
 	}
 	if bundle.OneTimePreKeyIndex >= 0 && result.CT4 != nil {
