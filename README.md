@@ -86,6 +86,20 @@ plaintext, _ := bobSess.Open(wire)
 fmt.Println(string(plaintext)) // "hello"
 ```
 
+### Pairing code
+
+`ComputeChallenge` (Go) / `computeChallenge` (TS) derive a 6-digit PIN both peers display to confirm they hold each other's identity keys:
+
+```
+thumb(k) = SHA-256(k)
+digest   = SHA-256("pqcratchet/v1/Challenge" || thumb(serverSigningPub) || thumb(clientSigningPub))
+PIN      = big-endian uint64(digest[0:8]) mod 1_000_000, zero-padded to 6 digits
+```
+
+The server is the responder that published the bundle; the client is the initiator. Swapping them changes the PIN. Known limitation: the PIN covers only the two long-term keys, so a man-in-the-middle who can generate ~10^6 key pairs during a pairing can make both sides show the same PIN; a commit-then-reveal step is planned before this is enabled by default.
+
+Shared vectors live in `go/pqcratchet/testdata/challenge_vectors.json` (regenerate with `go run ./cmd/challenge_vectors_gen pqcratchet/testdata/challenge_vectors.json` from `go/`).
+
 ## Repository layout
 
 ```

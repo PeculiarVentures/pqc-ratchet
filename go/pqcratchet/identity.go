@@ -102,8 +102,7 @@ func generateIdentity(id, signedPreKeyCount, preKeyCount int, r io.Reader) (*Ide
 	return ident, nil
 }
 
-// Thumbprint returns a hex-encoded SHA-256 digest of a public key byte slice.
-// Used to compute the challenge PIN and as a stable identifier for remote peers.
+// Thumbprint returns the hex SHA-256 of a public key, used as a stable identifier for remote peers.
 func Thumbprint(pubKeyBytes []byte) string {
 	h := sha256.Sum256(pubKeyBytes)
 	return hex.EncodeToString(h[:])

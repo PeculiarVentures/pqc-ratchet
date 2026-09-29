@@ -15,3 +15,4 @@ export * from "./x3dh.js";
 export * from "./session.js";
 export * from "./identity.js";
 export * from "./wire.js";
+export * from "./challenge.js";
