@@ -88,17 +88,35 @@ fmt.Println(string(plaintext)) // "hello"
 
 ### Pairing code
 
-`ComputeChallenge` (Go) / `computeChallenge` (TS) derive a 6-digit PIN both peers display to confirm they hold each other's identity keys:
+Both peers display a 6-digit PIN to confirm they hold each other's identity keys. The server is the responder that published the bundle; the client is the initiator. The PIN binds both keys and two nonces fixed by commit-then-reveal:
 
 ```
-thumb(k) = SHA-256(k)
-digest   = SHA-256("pqcratchet/v1/Challenge" || thumb(serverSigningPub) || thumb(clientSigningPub))
+thumb(k) = SHA-256(k)                                       (raw 32 bytes)
+nonce    = 32 random bytes                                   (crypto/rand; WebCrypto getRandomValues)
+commit   = SHA-256("pqcratchet/v1/Commit" || thumb(clientSigningPub) || clientNonce)
+digest   = SHA-256("pqcratchet/v1/Challenge2" || thumb(serverSigningPub) || thumb(clientSigningPub) || clientNonce || serverNonce)
 PIN      = big-endian uint64(digest[0:8]) mod 1_000_000, zero-padded to 6 digits
 ```
 
-The server is the responder that published the bundle; the client is the initiator. Swapping them changes the PIN. Known limitation: the PIN covers only the two long-term keys, so a man-in-the-middle who can generate ~10^6 key pairs during a pairing can make both sides show the same PIN; a commit-then-reveal step is planned before this is enabled by default.
+Flow (implemented by the application):
 
-Shared vectors live in `go/pqcratchet/testdata/challenge_vectors.json` (regenerate with `go run ./cmd/challenge_vectors_gen pqcratchet/testdata/challenge_vectors.json` from `go/`).
+1. Client picks `clientNonce` and sends `commit`.
+2. Server replies with a fresh `serverNonce`, only after it has received the commit.
+3. Client reveals `clientNonce`.
+4. Server checks it against the commit (`VerifyChallengeCommit`), then both sides show the PIN.
+
+Each side fixes its nonce before learning the other's, so a man-in-the-middle cannot grind keys offline and matches with probability 10^-6 per attempt.
+
+| | Go | TypeScript |
+|---|---|---|
+| Nonce | `NewChallengeNonce` | `newChallengeNonce` |
+| Commit | `CommitChallengeNonce` | `commitChallengeNonce` |
+| Verify (constant time) | `VerifyChallengeCommit` | `verifyChallengeCommit` |
+| PIN | `ComputeChallengeV2` | `computeChallengeV2` |
+
+The earlier `ComputeChallenge` / `computeChallenge` (label `"pqcratchet/v1/Challenge"`, keys only) is deprecated: without nonces, a man-in-the-middle who can generate ~10^6 key pairs can make both sides show the same PIN.
+
+Shared vectors live in `go/pqcratchet/testdata/challenge_v2_vectors.json` (and `challenge_vectors.json` for the deprecated PIN). Regenerate both with `go run ./cmd/challenge_vectors_gen pqcratchet/testdata` from `go/`.
 
 ## Repository layout
 
