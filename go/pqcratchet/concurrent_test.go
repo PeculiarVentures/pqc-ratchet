@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	pqc "github.com/PeculiarVentures/pqc-ratchet/pqcratchet"
+	pqc "github.com/PeculiarVentures/pqc-ratchet/go/pqcratchet"
 )
 
 // TestOPKConcurrentReservation fires many concurrent CreateSessionResponder

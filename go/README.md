@@ -101,8 +101,10 @@ See [DESIGN.md](DESIGN.md) for the full analysis.
 
 
 
+Install: `go get github.com/PeculiarVentures/pqc-ratchet/go`
+
 ```go
-import pqc "github.com/PeculiarVentures/pqc-ratchet/pqcratchet"
+import pqc "github.com/PeculiarVentures/pqc-ratchet/go/pqcratchet"
 
 // ── Setup (one-time per user, persist identities to storage) ─────────────────
 

@@ -1,4 +1,4 @@
-module github.com/PeculiarVentures/pqc-ratchet
+module github.com/PeculiarVentures/pqc-ratchet/go
 
 go 1.22.0
 
