@@ -1,10 +1,10 @@
 // challenge_vectors_gen writes the shared ComputeChallenge and ComputeChallengeV2 test vectors.
 //
-// Usage:
+// Usage (from go/):
 //
-//	challenge_vectors_gen pqcratchet/testdata
+//	challenge_vectors_gen <testdata dir>    # e.g. pqcratchet/testdata
 //
-// It writes challenge_vectors.json and challenge_v2_vectors.json into that directory.
+// The argument is a directory, not a file: it writes challenge_vectors.json and challenge_v2_vectors.json into it.
 // Keys are real ML-DSA-65 public keys and nonces are derived from fixed seeds, so the output is reproducible.
 package main
 
@@ -38,7 +38,7 @@ type File struct {
 
 func main() {
 	if len(os.Args) != 2 {
-		fatalf("usage: challenge_vectors_gen <testdata dir>")
+		fatalf("usage: challenge_vectors_gen <testdata dir>\n\nWrites challenge_vectors.json and challenge_v2_vectors.json into <testdata dir> (pqcratchet/testdata from go/).")
 	}
 	dir := os.Args[1]
 	if err := generate(filepath.Join(dir, "challenge_vectors.json")); err != nil {
@@ -166,6 +166,40 @@ func vectorV2(note string, server, client, clientNonce, serverNonce []byte) (Vec
 	}, nil
 }
 
+// checkV2 finds the swap, serverNonce-only and clientNonce-only pairs by content and checks each changes what it should.
+func checkV2(vs []VectorV2) error {
+	found := map[string]bool{}
+	for _, x := range vs {
+		for _, y := range vs {
+			sameNonces := x.ClientNonce == y.ClientNonce && x.ServerNonce == y.ServerNonce
+			sameKeys := x.ServerSigningPub == y.ServerSigningPub && x.ClientSigningPub == y.ClientSigningPub
+			switch {
+			case sameNonces && x.ServerSigningPub == y.ClientSigningPub && x.ClientSigningPub == y.ServerSigningPub && x.ServerSigningPub != x.ClientSigningPub:
+				if x.Pin == y.Pin || x.Commit == y.Commit {
+					return fmt.Errorf("swapped keys give the same PIN or commit")
+				}
+				found["swap"] = true
+			case sameKeys && x.ClientNonce == y.ClientNonce && x.ServerNonce != y.ServerNonce:
+				if x.Pin == y.Pin || x.Commit != y.Commit {
+					return fmt.Errorf("serverNonce-only change must keep the commit and change the PIN")
+				}
+				found["serverNonce"] = true
+			case sameKeys && x.ClientNonce != y.ClientNonce && x.ServerNonce == y.ServerNonce:
+				if x.Pin == y.Pin || x.Commit == y.Commit {
+					return fmt.Errorf("clientNonce-only change must change the commit and the PIN")
+				}
+				found["clientNonce"] = true
+			}
+		}
+	}
+	for _, k := range []string{"swap", "serverNonce", "clientNonce"} {
+		if !found[k] {
+			return fmt.Errorf("no %s pair among the vectors", k)
+		}
+	}
+	return nil
+}
+
 func generateV2(path string) error {
 	a, b, c, d := pubKey(0), pubKey(1), pubKey(2), pubKey(3)
 	cn, sn := nonce(0), nonce(1)
@@ -188,14 +222,8 @@ func generateV2(path string) error {
 		}
 		vs = append(vs, v)
 	}
-	if vs[1].Pin == vs[0].Pin || vs[1].Commit == vs[0].Commit {
-		return fmt.Errorf("swapped keys give the same PIN or commit")
-	}
-	if vs[2].Pin == vs[0].Pin || vs[2].Commit != vs[0].Commit {
-		return fmt.Errorf("serverNonce-only change must keep the commit and change the PIN")
-	}
-	if vs[3].Pin == vs[0].Pin || vs[3].Commit == vs[0].Commit {
-		return fmt.Errorf("clientNonce-only change must change the commit and the PIN")
+	if err := checkV2(vs); err != nil {
+		return err
 	}
 
 	// Search the serverNonce sequence for a PIN with a leading zero.

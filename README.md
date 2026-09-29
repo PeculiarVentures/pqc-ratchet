@@ -107,6 +107,12 @@ Flow (implemented by the application):
 
 Each side fixes its nonce before learning the other's, so a man-in-the-middle cannot grind keys offline and matches with probability 10^-6 per attempt.
 
+**Application requirements.** The 10^-6 bound holds only if the application enforces the flow:
+
+- Server: at most one pending commit at a time, across all sessions, not just per session. A commit is pending from receipt until it is revealed and resolved, or expires; a new commit while one is pending is rejected. With k concurrent commits an attacker learns the client's PIN and reveals only on the matching server session, succeeding with probability k·10^-6.
+- Server: a fresh random `serverNonce` per commit, sent only after the commit is received and never reused; one commit per session; verify the commit before showing any PIN; a mismatch or timeout aborts the pairing (no retry on the same session).
+- Client: obtain and verify the server bundle before committing; a fresh `clientNonce` per pairing attempt; reveal only after receiving `serverNonce`; never reveal for a commit it did not send.
+
 | | Go | TypeScript |
 |---|---|---|
 | Nonce | `NewChallengeNonce` | `newChallengeNonce` |

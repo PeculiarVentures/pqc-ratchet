@@ -3,6 +3,9 @@ import { concat, constantTimeEqual, randomBytes, sha256 } from "./crypto.js";
 /** Byte length of the commit-then-reveal nonces. */
 export const CHALLENGE_NONCE_SIZE = 32;
 
+/** Byte length of a commit (a SHA-256 digest). */
+const CHALLENGE_COMMIT_SIZE = 32;
+
 const enc = new TextEncoder();
 const CHALLENGE_LABEL = enc.encode("pqcratchet/v1/Challenge");
 const COMMIT_LABEL = enc.encode("pqcratchet/v1/Commit");
@@ -57,7 +60,7 @@ export async function verifyChallengeCommit(
   clientNonce: Uint8Array,
   commit: Uint8Array,
 ): Promise<boolean> {
-  if (clientNonce.length !== CHALLENGE_NONCE_SIZE || commit.length !== 32) return false;
+  if (clientNonce.length !== CHALLENGE_NONCE_SIZE || commit.length !== CHALLENGE_COMMIT_SIZE) return false;
   return constantTimeEqual(await commitChallengeNonce(clientSigningPub, clientNonce), commit);
 }
 
