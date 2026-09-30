@@ -208,6 +208,9 @@ func UnmarshalBundleWire(r io.Reader) (*BundleWire, error) {
 	if err = readFull(r, flag); err != nil {
 		return nil, fmt.Errorf("bundle: hasOneTimePreKey: %w", err)
 	}
+	if flag[0] > 0x01 {
+		return nil, fmt.Errorf("bundle: hasOneTimePreKey must be 0 or 1, got 0x%02x", flag[0])
+	}
 	if flag[0] == 0x01 {
 		b.HasOneTimePreKey = true
 		if err = readFull(r, b.OneTimePreKeyPub[:]); err != nil {
@@ -397,6 +400,9 @@ func UnmarshalPreKeyMessageWire(r io.Reader) (*PreKeyMessageWire, error) {
 	if err = readFull(r, flag); err != nil {
 		return nil, fmt.Errorf("preKeyMsg: hasCT4: %w", err)
 	}
+	if flag[0] > 0x01 {
+		return nil, fmt.Errorf("preKeyMsg: hasCT4 must be 0 or 1, got 0x%02x", flag[0])
+	}
 	if flag[0] == 0x01 {
 		m.HasCT4 = true
 		if err = readFull(r, m.CT4[:]); err != nil {
@@ -510,6 +516,9 @@ func UnmarshalMessageProtocol(b []byte) (*ParsedMessageProtocol, error) {
 	flag := make([]byte, 1)
 	if err = readFull(r, flag); err != nil {
 		return nil, fmt.Errorf("msg: hasRatchetCT: %w", err)
+	}
+	if flag[0] > 0x01 {
+		return nil, fmt.Errorf("msg: hasRatchetCT must be 0 or 1, got 0x%02x", flag[0])
 	}
 	if flag[0] == 0x01 {
 		var ratchetCT HybridKEMCiphertext

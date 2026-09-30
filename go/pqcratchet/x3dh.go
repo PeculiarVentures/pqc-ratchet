@@ -19,6 +19,9 @@ package pqcratchet
 //
 //	Sent to Bob: { ctx, IK_A.ex, EK_A.pub, ct1, ct2, [ct4], Sig(IK_A.sig, T) }
 //
+// T covers Bob's identity keys, signed pre-key and one-time pre-key, so Bob
+// can check the signature before he reserves or decapsulates with any key.
+//
 // Bob (responder) side — AuthenticateB:
 //
 //	rebuild T from ctx and Bob's own keys; verify Sig(IK_A.sig, T) before decapsulating
@@ -102,10 +105,6 @@ type KEMInitiatorResult struct {
 	// RootKey is the derived 32-byte session root key.
 	RootKey []byte
 
-	// ExporterSecret is the 32-byte secret behind Session.ExportKeyingMaterial.
-	// It never leaves the session; treat it like RootKey.
-	ExporterSecret []byte
-
 	// TranscriptHash is SHA-256 of the signed X3DH transcript. It is not secret.
 	// Both sides compute the same value; it is part of the session AD.
 	TranscriptHash []byte
@@ -128,17 +127,24 @@ type KEMInitiatorResult struct {
 	// InitiatorSig is Alice's ML-DSA-65 signature over the X3DH transcript
 	// built by buildInitiatorTranscript. It proves Alice holds the private key
 	// for her signing public key, and binds the session context, protocol
-	// version and Bob's identity into her statement.
+	// version and Bob's keys into her statement.
 	InitiatorSig []byte
+
+	// exporterSecret backs Session.ExportKeyingMaterial. It is unexported so
+	// that logging or serialising the result cannot leak it, and it is
+	// zeroed once the session has taken a copy.
+	exporterSecret []byte
 }
 
 // ResponderKeys are the responder's public keys as the initiator saw them in
 // the bundle. They are bound into the signed transcript, so a PreKeyMessage
-// addressed to one responder is rejected by any other.
+// addressed to one responder, or to one of its pre-keys, is rejected by any
+// other.
 type ResponderKeys struct {
-	SigningPubBytes []byte              // IK_B.sig public key bytes (DSAPublicKeySize)
-	ExchangePub     *HybridKEMPublicKey // IK_B.ex
-	SignedPreKeyPub *HybridKEMPublicKey // SPK_B
+	SigningPubBytes  []byte              // IK_B.sig public key bytes (DSAPublicKeySize)
+	ExchangePub      *HybridKEMPublicKey // IK_B.ex
+	SignedPreKeyPub  *HybridKEMPublicKey // SPK_B
+	OneTimePreKeyPub *HybridKEMPublicKey // OPK_B, or nil when no one-time pre-key is used
 }
 
 // AuthenticateA performs the X3DH key agreement from the initiator's side.
@@ -160,19 +166,18 @@ type ResponderKeys struct {
 //	[2] Hashimoto et al. PKC 2022. https://eprint.iacr.org/2021/616
 //
 // Parameters:
-//   - initiatorSigningKey:    Alice's ML-DSA-65 signing private key (IK_A.sig)
-//   - initiatorExchangePub:   Alice's KEM exchange public key (IK_A.ex)
-//   - responder:              Bob's identity and signed pre-key from the bundle
-//   - remoteOneTimePreKeyPub: Bob's one-time pre-key public key (OPK_B), or nil
-//   - sessionContext:         application context to bind (may be empty)
+//   - initiatorSigningKey:  Alice's ML-DSA-65 signing private key (IK_A.sig)
+//   - initiatorExchangePub: Alice's KEM exchange public key (IK_A.ex)
+//   - responder:            Bob's identity key, signed pre-key and optional
+//     one-time pre-key from the bundle
+//   - sessionContext:       application context to bind (may be empty)
 func AuthenticateA(
 	initiatorSigningKey *DSAPrivateKey,
 	initiatorExchangePub *HybridKEMPublicKey,
 	responder *ResponderKeys,
-	remoteOneTimePreKeyPub *HybridKEMPublicKey,
 	sessionContext []byte,
 ) (*KEMInitiatorResult, error) {
-	return authenticateA(rand.Reader, initiatorSigningKey, initiatorExchangePub, responder, remoteOneTimePreKeyPub, sessionContext)
+	return authenticateA(rand.Reader, initiatorSigningKey, initiatorExchangePub, responder, sessionContext)
 }
 
 func authenticateA(
@@ -180,7 +185,6 @@ func authenticateA(
 	initiatorSigningKey *DSAPrivateKey,
 	initiatorExchangePub *HybridKEMPublicKey,
 	responder *ResponderKeys,
-	remoteOneTimePreKeyPub *HybridKEMPublicKey,
 	sessionContext []byte,
 ) (*KEMInitiatorResult, error) {
 	if len(sessionContext) > MaxSessionContextSize {
@@ -215,8 +219,8 @@ func authenticateA(
 	// Optional KEM3 = Encap(OPK_B) → ss3 (one-time pre-key, if available)
 	var ct4 *HybridKEMCiphertext
 	var ss3 []byte
-	if remoteOneTimePreKeyPub != nil {
-		ct4, ss3, err = Encapsulate(r, remoteOneTimePreKeyPub)
+	if responder.OneTimePreKeyPub != nil {
+		ct4, ss3, err = Encapsulate(r, responder.OneTimePreKeyPub)
 		if err != nil {
 			return nil, fmt.Errorf("x3dh KEM3 (OPK): %w", err)
 		}
@@ -238,7 +242,6 @@ func authenticateA(
 
 	return &KEMInitiatorResult{
 		RootKey:        rootKey,
-		ExporterSecret: exporterSecret,
 		TranscriptHash: th[:],
 		SessionContext: ctx,
 		EphemeralKP:    ephemeralKP,
@@ -246,28 +249,33 @@ func authenticateA(
 		CT2:            ct2,
 		CT4:            ct4,
 		InitiatorSig:   sig,
+		exporterSecret: exporterSecret,
 	}, nil
 }
 
 // KEMResponderResult is returned by AuthenticateB.
 type KEMResponderResult struct {
 	RootKey        []byte
-	ExporterSecret []byte
 	TranscriptHash []byte
+	exporterSecret []byte // see KEMInitiatorResult.exporterSecret
 }
 
 // AuthenticateB performs X3DH from the responder's side.
 //
 // Rebuilds the transcript from the received values and Bob's own public keys,
-// and verifies Alice's ML-DSA-65 signature over it before deriving the root
-// key. Returns ErrInvalidSignature if verification fails; the caller must not
+// and verifies Alice's ML-DSA-65 signature over it before decapsulating.
+// Returns ErrInvalidSignature if verification fails; the caller must not
 // proceed to create a session in that case. A PreKeyMessage that was built
-// for a different responder, protocol version or session context fails here.
+// for a different responder, pre-key, protocol version or session context
+// fails here.
+//
+// responder must describe Bob's own keys. Set responder.OneTimePreKeyPub
+// exactly when oneTimePreKeyPriv is non-nil.
 //
 //   - identityExchangePriv:  Bob's identity exchange private key (IK_B.ex)
 //   - signedPreKeyPriv:      Bob's signed pre-key private key (SPK_B)
 //   - oneTimePreKeyPriv:     Bob's one-time pre-key private key (OPK_B), or nil
-//   - responder:             Bob's own public keys (IK_B.sig, IK_B.ex, SPK_B)
+//   - responder:             Bob's own public keys (IK_B.sig, IK_B.ex, SPK_B, OPK_B)
 //   - initiatorSigningPub:   Alice's ML-DSA-65 signing public key
 //   - initiatorExchangePub:  Alice's KEM exchange public key (IK_A.ex)
 //   - baseKey:               Alice's ephemeral KEM public key (EK_A.pub)
@@ -288,22 +296,60 @@ func AuthenticateB(
 	sessionContext []byte,
 	initiatorSig []byte,
 ) (*KEMResponderResult, error) {
+	if (oneTimePreKeyPriv == nil) != (responder == nil || responder.OneTimePreKeyPub == nil) {
+		return nil, fmt.Errorf("pqcratchet: responder one-time pre-key public and private keys must be supplied together")
+	}
+	th, err := verifyInitiatorTranscript(responder, initiatorSigningPub, initiatorExchangePub, baseKey, ct1, ct2, ct4, sessionContext, initiatorSig)
+	if err != nil {
+		return nil, err
+	}
+	return deriveResponderKeys(th, identityExchangePriv, signedPreKeyPriv, oneTimePreKeyPriv, ct1, ct2, ct4)
+}
+
+// verifyInitiatorTranscript rebuilds the transcript from the received values
+// and the responder's own keys and verifies InitiatorSig. It touches no
+// private key material, so a caller can run it before reserving a one-time
+// pre-key. Returns the transcript hash.
+func verifyInitiatorTranscript(
+	responder *ResponderKeys,
+	initiatorSigningPub *DSAPublicKey,
+	initiatorExchangePub *HybridKEMPublicKey,
+	baseKey *HybridKEMPublicKey,
+	ct1, ct2, ct4 *HybridKEMCiphertext,
+	sessionContext []byte,
+	initiatorSig []byte,
+) ([]byte, error) {
 	if len(sessionContext) > MaxSessionContextSize {
 		return nil, ErrSessionContextTooLarge
 	}
 	if err := responder.validate(); err != nil {
 		return nil, err
 	}
-
-	// Step 1: verify Alice's signature over the transcript BEFORE decapsulating.
-	// This prevents an attacker from using Bob's decapsulation as an oracle
-	// against arbitrary ciphertexts.
+	// Guard both directions of OPK mismatch explicitly. The transcript would
+	// fail to verify anyway, but a named error says what went wrong.
+	switch {
+	case responder.OneTimePreKeyPub != nil && ct4 == nil:
+		return nil, fmt.Errorf("x3dh: have OPK private key but initiator sent no CT4")
+	case responder.OneTimePreKeyPub == nil && ct4 != nil:
+		return nil, fmt.Errorf("x3dh: initiator sent CT4 but no OPK private key available")
+	}
+	// Verify BEFORE any decapsulation, so Bob's decapsulation cannot be used
+	// as an oracle against arbitrary ciphertexts.
 	transcript := buildInitiatorTranscript(sessionContext, responder, initiatorExchangePub, ct1, ct2, baseKey, ct4)
 	if !Verify(initiatorSigningPub, transcript, initiatorSig) {
 		return nil, ErrInvalidSignature
 	}
 	th := sha256.Sum256(transcript)
+	return th[:], nil
+}
 
+// deriveResponderKeys decapsulates and derives the root key and exporter
+// secret. Call it only after verifyInitiatorTranscript has succeeded.
+func deriveResponderKeys(
+	th []byte,
+	identityExchangePriv, signedPreKeyPriv, oneTimePreKeyPriv *HybridKEMPrivateKey,
+	ct1, ct2, ct4 *HybridKEMCiphertext,
+) (*KEMResponderResult, error) {
 	// ss1 = Decap(SPK_B.sk, ct1)
 	ss1, err := Decapsulate(signedPreKeyPriv, ct1)
 	if err != nil {
@@ -317,12 +363,6 @@ func AuthenticateB(
 	}
 
 	// Optional ss3 = Decap(OPK_B.sk, ct4)
-	//
-	// Guard both directions of mismatch: if Bob has an OPK private key but
-	// Alice sent no CT4, or Alice sent CT4 but Bob has no OPK key, silently
-	// skipping ss3 would derive a different root key than the other side,
-	// causing silent session establishment failure at message decryption.
-	// Return explicit errors so the mismatch surfaces immediately.
 	var ss3 []byte
 	switch {
 	case oneTimePreKeyPriv != nil && ct4 != nil:
@@ -336,11 +376,11 @@ func AuthenticateB(
 		return nil, fmt.Errorf("x3dh: initiator sent CT4 but no OPK private key available")
 	}
 
-	rootKey, exporterSecret, err := deriveKEMRootKey(ss1, ss2, ss3, th[:])
+	rootKey, exporterSecret, err := deriveKEMRootKey(ss1, ss2, ss3, th)
 	if err != nil {
 		return nil, err
 	}
-	return &KEMResponderResult{RootKey: rootKey, ExporterSecret: exporterSecret, TranscriptHash: th[:]}, nil
+	return &KEMResponderResult{RootKey: rootKey, TranscriptHash: th, exporterSecret: exporterSecret}, nil
 }
 
 func (k *ResponderKeys) validate() error {
@@ -364,15 +404,19 @@ func (k *ResponderKeys) validate() error {
 //	[32] SHA-256(IK_B.sig)
 //	IK_B.ex || SPK_B
 //	IK_A.ex || CT1 || CT2 || EK_A.pub
-//	u8   hasCT4 [|| CT4]
+//	u8   hasOPK [|| OPK_B || CT4]
 //
 // The label, version and protocol id stop a signature made for one protocol
 // or version from verifying under another. The context binds the application
-// session (for example rendezvous session id and origin). Bob's keys stop a
-// PreKeyMessage addressed to Bob from being accepted by any other responder.
-// IK_A.ex binds Alice's exchange key directly into her signed statement.
-// Variable-length fields are length-prefixed and everything else is fixed
-// size, so the encoding is unambiguous.
+// session (for example rendezvous session id and origin). Bob's keys, one-time
+// pre-key included, stop a PreKeyMessage addressed to one responder or one
+// pre-key from being accepted for any other. IK_A.ex binds Alice's exchange
+// key directly into her signed statement. Variable-length fields are
+// length-prefixed and everything else is fixed size, so the encoding is
+// unambiguous.
+//
+// The caller guarantees that responder.OneTimePreKeyPub and ct4 are either
+// both set or both nil.
 func buildInitiatorTranscript(
 	sessionContext []byte,
 	responder *ResponderKeys,
@@ -385,7 +429,7 @@ func buildInitiatorTranscript(
 	size := len(transcriptLabel) + 1 + 4 + len(ProtocolID) + 4 + len(sessionContext) + 32 +
 		HybridPublicKeySize*4 + HybridCiphertextSize*2 + 1
 	if ct4 != nil {
-		size += HybridCiphertextSize
+		size += HybridPublicKeySize + HybridCiphertextSize
 	}
 	t := make([]byte, 0, size)
 	t = append(t, transcriptLabel...)
@@ -403,6 +447,7 @@ func buildInitiatorTranscript(
 	t = append(t, baseKey[:]...)
 	if ct4 != nil {
 		t = append(t, 0x01)
+		t = append(t, responder.OneTimePreKeyPub[:]...)
 		t = append(t, ct4[:]...)
 	} else {
 		t = append(t, 0x00)

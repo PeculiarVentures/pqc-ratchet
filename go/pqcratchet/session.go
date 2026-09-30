@@ -181,11 +181,11 @@ func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, sessionCon
 		identity.SigningKey.Private,
 		&identity.ExchangeKey.Public,
 		&ResponderKeys{
-			SigningPubBytes: DSAPublicKeyBytes(bundle.IdentitySigningPub),
-			ExchangePub:     bundle.IdentityExchangePub,
-			SignedPreKeyPub: bundle.SignedPreKeyPub,
+			SigningPubBytes:  DSAPublicKeyBytes(bundle.IdentitySigningPub),
+			ExchangePub:      bundle.IdentityExchangePub,
+			SignedPreKeyPub:  bundle.SignedPreKeyPub,
+			OneTimePreKeyPub: bundle.OneTimePreKeyPub,
 		},
-		bundle.OneTimePreKeyPub,
 		sessionContext,
 	)
 	if err != nil {
@@ -207,7 +207,7 @@ func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, sessionCon
 			ExchangeKeyBytes: bundle.IdentityExchangePub[:],
 			Thumbprint:       Thumbprint(responderSigningPubBytes),
 		},
-		RootKey: result.RootKey,
+		RootKey: cloneBytes(result.RootKey),
 		// Alice's ephemeral keypair is also the initial ratchet keypair.
 		// Per X3DH spec §3.3, the ephemeral private key must be deleted after
 		// SK is computed. Here it is retained only as RatchetKP for the first
@@ -222,12 +222,18 @@ func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, sessionCon
 		AD:                       ad,
 		TranscriptHash:           cloneBytes(result.TranscriptHash),
 		SessionContext:           cloneBytes(result.SessionContext),
-		exporterSecret:           cloneBytes(result.ExporterSecret),
+		exporterSecret:           cloneBytes(result.exporterSecret),
 		InitiatorSigningKeyBytes: initiatorSigningPubBytes,
 		ResponderSigningKeyBytes: responderSigningPubBytes,
 		SkippedKeys:              make(map[string]*skippedKeyEntry),
 		SkippedKeyTTL:            DefaultSkippedKeyTTL,
 	}
+
+	// The session holds its own copy; clear the one in the result.
+	for i := range result.exporterSecret {
+		result.exporterSecret[i] = 0
+	}
+	result.exporterSecret = nil
 
 	return sess, result, nil
 }
@@ -253,59 +259,82 @@ func CreateSessionResponder(identity *Identity, msg *PreKeyMessage) (*Session, e
 		return nil, fmt.Errorf("signed pre-key %d not found", msg.SignedPreKeyIndex)
 	}
 
-	// Reserve the one-time pre-key under identity.mu to prevent concurrent
-	// CreateSessionResponder calls from observing the same OPK as non-nil
-	// and reusing it (TOCTOU / double-use). The slot is set to nil while
-	// holding the lock; on AuthenticateB failure it is restored (also under
-	// the lock) so unauthenticated or malformed requests do not permanently
-	// consume a key.
-	var oneTimePreKeyPriv *HybridKEMPrivateKey
-	var oneTimePreKeyKP *HybridKEMKeyPair // held for zeroing after use
-	var oneTimePreKeyIndex int = -1
+	signedPreKP := identity.SignedPreKeys[msg.SignedPreKeyIndex]
+
+	// Look up the one-time pre-key without reserving it. The signature check
+	// below needs its public key, and a PreKeyMessage that fails that check
+	// must not touch the slot at all.
+	//
+	// The public key is copied while holding the lock. A concurrent call that
+	// wins the reservation zeroes the key pair only after it has cleared the
+	// slot, so a copy taken under the lock never races with that zeroing.
+	var oneTimePreKeyKP *HybridKEMKeyPair
+	var opkPub *HybridKEMPublicKey
+	oneTimePreKeyIndex := -1
 	identity.mu.Lock()
 	if msg.OneTimePreKeyIndex >= 0 && msg.OneTimePreKeyIndex < len(identity.PreKeys) {
-		kp := identity.PreKeys[msg.OneTimePreKeyIndex]
-		if kp != nil {
-			oneTimePreKeyPriv = &kp.Private
+		if kp := identity.PreKeys[msg.OneTimePreKeyIndex]; kp != nil {
 			oneTimePreKeyKP = kp
 			oneTimePreKeyIndex = msg.OneTimePreKeyIndex
-			identity.PreKeys[msg.OneTimePreKeyIndex] = nil
+			opkPub = new(HybridKEMPublicKey)
+			copy(opkPub[:], kp.Public[:])
 		}
 	}
 	identity.mu.Unlock()
 
-	signedPreKP := identity.SignedPreKeys[msg.SignedPreKeyIndex]
-
 	var ownExchangePub, ownSignedPreKeyPub HybridKEMPublicKey
 	copy(ownExchangePub[:], identity.ExchangeKey.Public[:])
 	copy(ownSignedPreKeyPub[:], signedPreKP.Public[:])
+	responder := &ResponderKeys{
+		SigningPubBytes:  DSAPublicKeyBytes(identity.SigningKey.Public),
+		ExchangePub:      &ownExchangePub,
+		SignedPreKeyPub:  &ownSignedPreKeyPub,
+		OneTimePreKeyPub: opkPub,
+	}
 
-	x3dh, err := AuthenticateB(
-		&identity.ExchangeKey.Private,
-		&signedPreKP.Private,
-		oneTimePreKeyPriv,
-		&ResponderKeys{
-			SigningPubBytes: DSAPublicKeyBytes(identity.SigningKey.Public),
-			ExchangePub:     &ownExchangePub,
-			SignedPreKeyPub: &ownSignedPreKeyPub,
-		},
+	// Step 1: verify Alice's signature over the transcript. The transcript
+	// covers Bob's identity key, signed pre-key and one-time pre-key, so a
+	// message built for another responder, or with a rewritten pre-key index,
+	// is rejected here, before any decapsulation and before the OPK is used.
+	th, err := verifyInitiatorTranscript(
+		responder,
 		msg.IdentitySigningPub,
 		msg.IdentityExchangePub,
 		msg.BaseKey,
-		msg.CT1, msg.CT2,
-		msg.CT4,
+		msg.CT1, msg.CT2, msg.CT4,
 		msg.SessionContext,
 		msg.InitiatorSig,
 	)
 	if err != nil {
-		// Authentication failed — restore the OPK slot so the key is not
-		// permanently consumed by an unauthenticated or malformed request.
-		// The private key bytes have not been zeroed yet so restoration is safe.
-		if oneTimePreKeyIndex >= 0 {
+		return nil, fmt.Errorf("x3dh responder: %w", err)
+	}
+
+	// Step 2: reserve the one-time pre-key under identity.mu so concurrent
+	// CreateSessionResponder calls cannot both use it. If another call took it
+	// between the lookup and here, fail rather than use a key twice.
+	if oneTimePreKeyKP != nil {
+		identity.mu.Lock()
+		if identity.PreKeys[oneTimePreKeyIndex] != oneTimePreKeyKP {
+			identity.mu.Unlock()
+			return nil, fmt.Errorf("x3dh responder: one-time pre-key %d already used", oneTimePreKeyIndex)
+		}
+		identity.PreKeys[oneTimePreKeyIndex] = nil
+		identity.mu.Unlock()
+	}
+
+	var oneTimePreKeyPriv *HybridKEMPrivateKey
+	if oneTimePreKeyKP != nil {
+		oneTimePreKeyPriv = &oneTimePreKeyKP.Private
+	}
+
+	// Step 3: decapsulate and derive.
+	x3dh, err := deriveResponderKeys(th, &identity.ExchangeKey.Private, &signedPreKP.Private, oneTimePreKeyPriv, msg.CT1, msg.CT2, msg.CT4)
+	if err != nil {
+		// Restore the OPK slot so a malformed request that got past the
+		// signature check does not permanently consume the key. The private
+		// key bytes have not been zeroed yet, so restoration is safe.
+		if oneTimePreKeyKP != nil {
 			identity.mu.Lock()
-			// Only restore if the slot is still nil; a concurrent legitimate
-			// session may have already consumed another OPK at this index
-			// (shouldn't happen given monotonic index assignment, but be safe).
 			if identity.PreKeys[oneTimePreKeyIndex] == nil {
 				identity.PreKeys[oneTimePreKeyIndex] = oneTimePreKeyKP
 			}
@@ -313,9 +342,9 @@ func CreateSessionResponder(identity *Identity, msg *PreKeyMessage) (*Session, e
 		}
 		return nil, fmt.Errorf("x3dh responder: %w", err)
 	}
-	// Zero the OPK private key NOW — after AuthenticateB has finished using it
-	// and only on success. Per X3DH spec §3.4: "Bob deletes any one-time prekey
-	// private key that was used."
+	// Zero the OPK private key NOW, after it has been used and only on
+	// success. Per X3DH spec §3.4: "Bob deletes any one-time prekey private
+	// key that was used."
 	if oneTimePreKeyKP != nil {
 		ZeroKEMKeyPair(oneTimePreKeyKP)
 	}
@@ -346,7 +375,7 @@ func CreateSessionResponder(identity *Identity, msg *PreKeyMessage) (*Session, e
 		AD:                       ad,
 		TranscriptHash:           x3dh.TranscriptHash,
 		SessionContext:           cloneBytes(msg.SessionContext),
-		exporterSecret:           x3dh.ExporterSecret,
+		exporterSecret:           x3dh.exporterSecret,
 		InitiatorSigningKeyBytes: initiatorSigningPubBytes,
 		ResponderSigningKeyBytes: responderSigningPubBytes,
 		SkippedKeys:              make(map[string]*skippedKeyEntry),

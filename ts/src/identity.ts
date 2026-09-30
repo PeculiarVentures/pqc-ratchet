@@ -4,7 +4,7 @@
 
 import { generateKEMKeyPair, HybridKEMKeyPair, zeroKEMKeyPair } from "./kem.js";
 import { generateDSAKeyPair, DSAKeyPair, dsaSign, dsaVerify } from "./sign.js";
-import { authenticateA, authenticateB, KEMInitiatorResult, KEMResponderResult } from "./x3dh.js";
+import { authenticateA, verifyInitiatorTranscript, deriveResponderKeys, KEMInitiatorResult, KEMResponderResult } from "./x3dh.js";
 import { Session } from "./session.js";
 import { concat } from "./crypto.js";
 
@@ -121,8 +121,8 @@ export async function createSessionInitiator(
       signingPub: bundle.identitySigningPub,
       exchangePub: bundle.identityExchangePub,
       signedPreKeyPub: bundle.signedPreKeyPub,
+      oneTimePreKeyPub: bundle.oneTimePreKeyPub,
     },
-    bundle.oneTimePreKeyPub,
     sessionContext,
   );
 
@@ -163,7 +163,7 @@ export async function createSessionInitiator(
     ct2: x3dhResult.ct2,
     ct4: x3dhResult.ct4,
     initiatorSig: x3dhResult.initiatorSig,
-    sessionContext: x3dhResult.sessionContext,
+    sessionContext: new Uint8Array(x3dhResult.sessionContext),
     signedPreKeyIndex: bundle.signedPreKeyIndex,
     oneTimePreKeyIndex: bundle.oneTimePreKeyIndex,
   };
@@ -192,52 +192,71 @@ export async function createSessionResponder(
     throw new Error(`pqcratchet: signed pre-key ${msg.signedPreKeyIndex} not found`);
   }
 
-  // Handle OPK — nil slot before auth, restore on failure
-  let oneTimePreKeyPriv: Uint8Array | null = null;
+  const signedPreKP = responderIdentity.signedPreKeys[msg.signedPreKeyIndex];
+
+  // Look up the one-time pre-key without reserving it. A PreKeyMessage that
+  // fails the signature check must not touch the slot.
   let oneTimePreKeyKP: HybridKEMKeyPair | null = null;
   let oneTimePreKeyIndex = -1;
-
   if (msg.oneTimePreKeyIndex >= 0 && msg.oneTimePreKeyIndex < responderIdentity.preKeys.length) {
     const kp = responderIdentity.preKeys[msg.oneTimePreKeyIndex];
     if (kp !== null) {
-      oneTimePreKeyPriv = kp.privateKey;
       oneTimePreKeyKP = kp;
       oneTimePreKeyIndex = msg.oneTimePreKeyIndex;
-      responderIdentity.preKeys[msg.oneTimePreKeyIndex] = null; // nil slot
     }
   }
 
-  const signedPreKP = responderIdentity.signedPreKeys[msg.signedPreKeyIndex];
+  const sessionContext = msg.sessionContext ?? new Uint8Array(0);
 
+  // Step 1: verify the transcript signature. It covers Bob's identity key,
+  // signed pre-key and one-time pre-key, so a message for another responder
+  // or with a rewritten pre-key index fails here, before the OPK is used.
+  const transcriptHash = await verifyInitiatorTranscript(
+    {
+      signingPub: responderIdentity.signingKey.publicKey,
+      exchangePub: responderIdentity.exchangeKey.publicKey,
+      signedPreKeyPub: signedPreKP.publicKey,
+      oneTimePreKeyPub: oneTimePreKeyKP ? new Uint8Array(oneTimePreKeyKP.publicKey) : null,
+    },
+    msg.identitySigningPub,
+    msg.identityExchangePub,
+    msg.baseKey,
+    msg.ct1,
+    msg.ct2,
+    msg.ct4,
+    sessionContext,
+    msg.initiatorSig,
+  );
+
+  // Step 2: reserve the OPK. Another call may have used it while this one
+  // awaited the signature check; fail rather than use a key twice.
+  if (oneTimePreKeyKP !== null) {
+    if (responderIdentity.preKeys[oneTimePreKeyIndex] !== oneTimePreKeyKP) {
+      throw new Error(`pqcratchet: one-time pre-key ${oneTimePreKeyIndex} already used`);
+    }
+    responderIdentity.preKeys[oneTimePreKeyIndex] = null;
+  }
+
+  // Step 3: decapsulate and derive; restore the OPK slot on failure.
   let x3dh: KEMResponderResult;
   try {
-    x3dh = await authenticateB(
+    x3dh = await deriveResponderKeys(
+      transcriptHash,
       responderIdentity.exchangeKey.privateKey,
       signedPreKP.privateKey,
-      oneTimePreKeyPriv,
-      {
-        signingPub: responderIdentity.signingKey.publicKey,
-        exchangePub: responderIdentity.exchangeKey.publicKey,
-        signedPreKeyPub: signedPreKP.publicKey,
-      },
-      msg.identitySigningPub,
-      msg.identityExchangePub,
-      msg.baseKey,
+      oneTimePreKeyKP ? oneTimePreKeyKP.privateKey : null,
       msg.ct1,
       msg.ct2,
       msg.ct4,
-      msg.sessionContext ?? new Uint8Array(0),
-      msg.initiatorSig,
     );
   } catch (e) {
-    // Restore OPK slot on auth failure
-    if (oneTimePreKeyIndex >= 0 && oneTimePreKeyKP !== null) {
+    if (oneTimePreKeyKP !== null && responderIdentity.preKeys[oneTimePreKeyIndex] === null) {
       responderIdentity.preKeys[oneTimePreKeyIndex] = oneTimePreKeyKP;
     }
     throw e;
   }
 
-  // Zero OPK after successful auth
+  // Zero OPK after successful use
   if (oneTimePreKeyKP !== null) zeroKEMKeyPair(oneTimePreKeyKP);
 
   // AD = Encode(IK_A.ex) || Encode(IK_B.ex) || transcriptHash
@@ -246,7 +265,6 @@ export async function createSessionResponder(
   // Bob's initial ratchet keypair is the signed pre-key used in X3DH.
   // Alice encapsulates against this key to derive the first receiving chain.
   // This matches Go: RatchetKP = signedPreKP (not exchangeKey).
-  // (signedPreKP was already declared above for authenticateB)
 
   const session = new Session(
     x3dh.rootKey,
@@ -255,7 +273,7 @@ export async function createSessionResponder(
     msg.identitySigningPub,
     responderIdentity.signingKey.publicKey,
     x3dh.transcriptHash,
-    new Uint8Array(msg.sessionContext ?? new Uint8Array(0)),
+    new Uint8Array(sessionContext),
     x3dh.exporterSecret,
   );
 

@@ -194,7 +194,7 @@ u32  len(ctx)        ‖ ctx            (application session context, ≤ 4096 b
 [32] SHA-256(IK_B.sig)
 IK_B.ex ‖ SPK_B
 IK_A.ex ‖ CT1 ‖ CT2 ‖ EK_A.pub
-u8   hasCT4 [‖ CT4]
+u8   hasOPK [‖ OPK_B ‖ CT4]
 ```
 
 Each field is there for a reason.
@@ -207,13 +207,18 @@ Each field is there for a reason.
 - **Bob's keys.** Version 1 signed only Alice's values and the ciphertexts. A PreKeyMessage
   built for Bob could be delivered to Carol, and Carol would pass the signature check, then
   decapsulate with her own keys. ML-KEM's implicit rejection would give her random secrets,
-  so she would build a session that silently fails at the first message. Binding
-  `SHA-256(IK_B.sig)`, `IK_B.ex` and `SPK_B` makes Carol reject the message at the signature
-  check, before any decapsulation, and before any one-time pre-key is consumed.
+  so she would build a session that silently fails at the first message. The same gap let a
+  relay rewrite the one-time pre-key index in a captured PreKeyMessage and replay it once per
+  index, consuming every one-time pre-key Bob had published. Binding `SHA-256(IK_B.sig)`,
+  `IK_B.ex`, `SPK_B` and `OPK_B` closes both. `CreateSessionResponder` looks up the pre-keys the
+  message names, verifies the signature against them, and only then reserves the one-time
+  pre-key. A message for another responder, or with a rewritten pre-key index, is rejected
+  before any decapsulation and without touching the one-time pre-key slot.
 - **`IK_A.ex`.** Binds Alice's identity exchange key directly into her signed statement.
   Without it the binding is indirect, through the separate `ExchangeKeySig` field.
-- **`hasCT4`.** An explicit presence byte keeps the encoding unambiguous if trailing fields
-  are ever added.
+- **`hasOPK`.** An explicit presence byte keeps the encoding unambiguous. The wire parsers
+  accept only 0 or 1 for this and the other presence flags, so each message has exactly one
+  encoding.
 
 Every variable-length field is length-prefixed and every other field has a fixed size, so no
 two different field sets encode to the same bytes.
@@ -293,6 +298,9 @@ in the second handshake, so it could search for a collision in a short code deri
 exporter alone. The commit-then-reveal flow exists to stop exactly that search.
 
 ### What the library does not do
+
+The `RegistrationID` field in the PreKeyMessage is not signed. It is a lookup hint; do not
+make trust decisions on it.
 
 It does not decide which identity keys to trust. If an intermediary delivers bundles and
 nothing pins identity keys, the intermediary can substitute its own keys and sit in the

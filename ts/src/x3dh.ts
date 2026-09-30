@@ -26,8 +26,8 @@
  */
 
 import {
-  DSA_PUBLIC_KEY_SIZE, INFO_KEM_INIT, MAX_SESSION_CONTEXT_SIZE,
-  PROTOCOL_ID, TRANSCRIPT_LABEL,
+  DSA_PUBLIC_KEY_SIZE, HYBRID_CIPHERTEXT_SIZE, HYBRID_PUBLIC_KEY_SIZE,
+  INFO_KEM_INIT, MAX_SESSION_CONTEXT_SIZE, PROTOCOL_ID, TRANSCRIPT_LABEL,
 } from "./constants.js";
 import { hkdf, concat, sha256, writeUint32BE } from "./crypto.js";
 import { encapsulate, decapsulate, generateKEMKeyPair, HybridKEMKeyPair } from "./kem.js";
@@ -41,12 +41,13 @@ export const ERR_SESSION_CONTEXT_TOO_LARGE = "pqcratchet: session context exceed
 /**
  * The responder's public keys as the initiator saw them in the bundle. They
  * are bound into the signed transcript, so a PreKeyMessage addressed to one
- * responder is rejected by any other.
+ * responder, or to one of its pre-keys, is rejected by any other.
  */
 export interface ResponderKeys {
-  signingPub: Uint8Array;       // IK_B.sig
-  exchangePub: Uint8Array;      // IK_B.ex
-  signedPreKeyPub: Uint8Array;  // SPK_B
+  signingPub: Uint8Array;               // IK_B.sig
+  exchangePub: Uint8Array;              // IK_B.ex
+  signedPreKeyPub: Uint8Array;          // SPK_B
+  oneTimePreKeyPub?: Uint8Array | null; // OPK_B, or null/absent when none is used
 }
 
 export interface KEMInitiatorResult {
@@ -73,12 +74,13 @@ export async function authenticateA(
   initiatorSigningKey: Uint8Array,
   initiatorExchangePub: Uint8Array,
   responder: ResponderKeys,
-  remoteOneTimePreKeyPub: Uint8Array | null,
   sessionContext: Uint8Array = new Uint8Array(0),
   encapSeed?: Uint8Array, // for deterministic tests only
 ): Promise<KEMInitiatorResult> {
   checkContext(sessionContext);
   checkResponder(responder);
+  checkLen("initiator exchange key", initiatorExchangePub, HYBRID_PUBLIC_KEY_SIZE);
+  const remoteOneTimePreKeyPub = responder.oneTimePreKeyPub ?? null;
 
   // KEM1 = Encap(SPK_B) → ss1
   const { ciphertext: ct1, sharedSecret: ss1 } = await encapsulate(responder.signedPreKeyPub, encapSeed);
@@ -112,6 +114,10 @@ export async function authenticateA(
 
 // ─── AuthenticateB ───────────────────────────────────────────────────────────
 
+/**
+ * Responder side. `responder` must describe Bob's own keys; set
+ * `responder.oneTimePreKeyPub` exactly when `oneTimePreKeyPriv` is non-null.
+ */
 export async function authenticateB(
   identityExchangePriv: Uint8Array,
   signedPreKeyPriv: Uint8Array,
@@ -126,17 +132,62 @@ export async function authenticateB(
   sessionContext: Uint8Array,
   initiatorSig: Uint8Array,
 ): Promise<KEMResponderResult> {
+  if ((oneTimePreKeyPriv === null) !== ((responder.oneTimePreKeyPub ?? null) === null)) {
+    throw new Error("pqcratchet: responder one-time pre-key public and private keys must be supplied together");
+  }
+  const transcriptHash = await verifyInitiatorTranscript(
+    responder, initiatorSigningPub, initiatorExchangePub, baseKey, ct1, ct2, ct4, sessionContext, initiatorSig,
+  );
+  return deriveResponderKeys(transcriptHash, identityExchangePriv, signedPreKeyPriv, oneTimePreKeyPriv, ct1, ct2, ct4);
+}
+
+/**
+ * Rebuild the transcript from the received values and the responder's own
+ * keys and verify the initiator's signature. Touches no private key, so it
+ * can run before a one-time pre-key is reserved. Returns the transcript hash.
+ */
+export async function verifyInitiatorTranscript(
+  responder: ResponderKeys,
+  initiatorSigningPub: Uint8Array,
+  initiatorExchangePub: Uint8Array,
+  baseKey: Uint8Array,
+  ct1: Uint8Array,
+  ct2: Uint8Array,
+  ct4: Uint8Array | null,
+  sessionContext: Uint8Array,
+  initiatorSig: Uint8Array,
+): Promise<Uint8Array> {
   checkContext(sessionContext);
   checkResponder(responder);
+  checkLen("initiator exchange key", initiatorExchangePub, HYBRID_PUBLIC_KEY_SIZE);
+  checkLen("base key", baseKey, HYBRID_PUBLIC_KEY_SIZE);
+  checkLen("CT1", ct1, HYBRID_CIPHERTEXT_SIZE);
+  checkLen("CT2", ct2, HYBRID_CIPHERTEXT_SIZE);
+  if (ct4 !== null) checkLen("CT4", ct4, HYBRID_CIPHERTEXT_SIZE);
 
-  // Verify initiator signature BEFORE decapsulating.
-  // This prevents Bob's decapsulation from being used as a chosen-ciphertext oracle.
+  const opk = responder.oneTimePreKeyPub ?? null;
+  if (opk !== null && ct4 === null) throw new Error("pqcratchet: have OPK private key but initiator sent no CT4");
+  if (opk === null && ct4 !== null) throw new Error("pqcratchet: initiator sent CT4 but no OPK private key available");
+
+  // Verify BEFORE any decapsulation, so Bob's decapsulation cannot be used as
+  // a chosen-ciphertext oracle.
   const transcript = await buildInitiatorTranscript(sessionContext, responder, initiatorExchangePub, ct1, ct2, baseKey, ct4);
   if (!dsaVerify(initiatorSigningPub, transcript, initiatorSig)) {
     throw new Error("pqcratchet: invalid signature");
   }
-  const transcriptHash = await sha256(transcript);
+  return sha256(transcript);
+}
 
+/** Decapsulate and derive. Call only after verifyInitiatorTranscript succeeded. */
+export async function deriveResponderKeys(
+  transcriptHash: Uint8Array,
+  identityExchangePriv: Uint8Array,
+  signedPreKeyPriv: Uint8Array,
+  oneTimePreKeyPriv: Uint8Array | null,
+  ct1: Uint8Array,
+  ct2: Uint8Array,
+  ct4: Uint8Array | null,
+): Promise<KEMResponderResult> {
   // ss1 = Decap(SPK_B.sk, ct1)
   const ss1 = await decapsulate(signedPreKeyPriv, ct1);
 
@@ -170,7 +221,10 @@ export async function authenticateB(
  *   [32] SHA-256(IK_B.sig)
  *   IK_B.ex || SPK_B
  *   IK_A.ex || CT1 || CT2 || EK_A.pub
- *   u8   hasCT4 [|| CT4]
+ *   u8   hasOPK [|| OPK_B || CT4]
+ *
+ * The caller guarantees that responder.oneTimePreKeyPub and ct4 are either
+ * both present or both absent.
  */
 export async function buildInitiatorTranscript(
   sessionContext: Uint8Array,
@@ -192,8 +246,13 @@ export async function buildInitiatorTranscript(
     responder.signedPreKeyPub,
     initiatorExchangePub, ct1, ct2, baseKey,
   ];
-  if (ct4 !== null) parts.push(new Uint8Array([0x01]), ct4);
-  else parts.push(new Uint8Array([0x00]));
+  if (ct4 !== null) {
+    const opk = responder.oneTimePreKeyPub;
+    if (!opk) throw new Error("pqcratchet: CT4 present but no one-time pre-key in responder keys");
+    parts.push(new Uint8Array([0x01]), opk, ct4);
+  } else {
+    parts.push(new Uint8Array([0x00]));
+  }
   return concat(...parts);
 }
 
@@ -228,7 +287,14 @@ function checkContext(ctx: Uint8Array): void {
 }
 
 function checkResponder(r: ResponderKeys): void {
-  if (r.signingPub.length !== DSA_PUBLIC_KEY_SIZE) {
-    throw new Error(`pqcratchet: responder signing key must be ${DSA_PUBLIC_KEY_SIZE} bytes, got ${r.signingPub.length}`);
-  }
+  checkLen("responder signing key", r.signingPub, DSA_PUBLIC_KEY_SIZE);
+  checkLen("responder exchange key", r.exchangePub, HYBRID_PUBLIC_KEY_SIZE);
+  checkLen("responder signed pre-key", r.signedPreKeyPub, HYBRID_PUBLIC_KEY_SIZE);
+  if (r.oneTimePreKeyPub) checkLen("responder one-time pre-key", r.oneTimePreKeyPub, HYBRID_PUBLIC_KEY_SIZE);
+}
+
+// Every transcript field other than the context has a fixed size. Checking
+// sizes here keeps the encoding unambiguous for hand-built inputs.
+function checkLen(name: string, b: Uint8Array, want: number): void {
+  if (b.length !== want) throw new Error(`pqcratchet: ${name} must be ${want} bytes, got ${b.length}`);
 }

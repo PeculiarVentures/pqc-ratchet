@@ -159,14 +159,16 @@ test("X3DH both sides derive same root key", async () => {
   const bobOpk = generateKEMKeyPair();
 
   const bobSign = generateDSAKeyPair();
-  const bobKeys = { signingPub: bobSign.publicKey, exchangePub: bobEx.publicKey, signedPreKeyPub: bobSpk.publicKey };
+  const bobKeys = {
+    signingPub: bobSign.publicKey, exchangePub: bobEx.publicKey,
+    signedPreKeyPub: bobSpk.publicKey, oneTimePreKeyPub: bobOpk.publicKey,
+  };
   const ctx = new TextEncoder().encode("sid=s_1");
 
   const result = await authenticateA(
     aliceSign.privateKey,
     aliceEx.publicKey,
     bobKeys,
-    bobOpk.publicKey,
     ctx,
   );
 
@@ -203,7 +205,6 @@ test("X3DH without OPK derives same root key", async () => {
     aliceSign.privateKey,
     aliceEx.publicKey,
     bobKeys,
-    null,
   );
 
   const b = await authenticateB(
@@ -234,7 +235,7 @@ test("X3DH invalid signature rejects", async () => {
   const bobKeys = { signingPub: bobSign.publicKey, exchangePub: bobEx.publicKey, signedPreKeyPub: bobSpk.publicKey };
 
   const result = await authenticateA(
-    aliceSign.privateKey, aliceEx.publicKey, bobKeys, null,
+    aliceSign.privateKey, aliceEx.publicKey, bobKeys,
   );
 
   const badSig = randomBytes(DSA_SIGNATURE_SIZE);

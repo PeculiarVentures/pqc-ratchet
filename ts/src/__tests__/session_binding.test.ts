@@ -6,7 +6,8 @@
 import {
   generateIdentity, createSessionInitiator, createSessionResponder,
   Identity, PreKeyBundle, PreKeyMessage,
-  marshalPreKeyMessageWire, unmarshalPreKeyMessageWire, unmarshalSignedMessage,
+  marshalPreKeyMessageWire, unmarshalPreKeyMessageWire, unmarshalSignedMessage, unmarshalMessageProtocol,
+  DSA_PUBLIC_KEY_SIZE, DSA_SIGNATURE_SIZE, HYBRID_CIPHERTEXT_SIZE,
   WIRE_VERSION, NO_ONE_TIME_PRE_KEY, MAX_SESSION_CONTEXT_SIZE, HYBRID_PUBLIC_KEY_SIZE,
   ERR_SESSION_CONTEXT_TOO_LARGE, ERR_EXPORTER_LENGTH, Session,
 } from "../index.js";
@@ -86,12 +87,73 @@ test("session context is bound and delivered", async () => {
   await roundTrip(bobSess, aliceSess, "reply");
 });
 
-test("tampered session context is rejected", async () => {
+test("tampered session context is rejected without consuming the OPK", async () => {
   const ctx = enc("sid=s_123;origin=https://a.example");
-  const { bob, pkmBytes } = await establish(ctx);
+  const alice = await generateIdentity(1, 1, 0);
+  const bob = await generateIdentity(2, 1, 1);
+  const { preKeyMessage } = await createSessionInitiator(alice, bundleFor(bob), ctx);
+  const pkmBytes = toWire(preKeyMessage);
   const tampered = new Uint8Array(pkmBytes);
   tampered[CTX_OFFSET + ctx.length - 1] ^= 0x01;
   await expect(createSessionResponder(bob, fromWire(tampered))).rejects.toThrow("invalid signature");
+  expect(bob.preKeys[0]).not.toBeNull();
+  await createSessionResponder(bob, fromWire(pkmBytes));
+});
+
+test("rewritten one-time pre-key index is rejected and no OPK is consumed", async () => {
+  const alice = await generateIdentity(1, 1, 0);
+  const bob = await generateIdentity(2, 1, 3);
+  const { preKeyMessage } = await createSessionInitiator(alice, bundleFor(bob));
+  for (const idx of [1, 2]) {
+    await expect(createSessionResponder(bob, { ...preKeyMessage, oneTimePreKeyIndex: idx }))
+      .rejects.toThrow("invalid signature");
+  }
+  expect(bob.preKeys.every(k => k !== null)).toBe(true);
+  await createSessionResponder(bob, preKeyMessage);
+  expect(bob.preKeys[0]).toBeNull();
+  expect(bob.preKeys[1]).not.toBeNull();
+  expect(bob.preKeys[2]).not.toBeNull();
+});
+
+test("rewritten signed pre-key index is rejected", async () => {
+  const alice = await generateIdentity(1, 1, 0);
+  const bob = await generateIdentity(2, 2, 0);
+  const { preKeyMessage } = await createSessionInitiator(alice, bundleFor(bob, false));
+  await expect(createSessionResponder(bob, { ...preKeyMessage, signedPreKeyIndex: 1 }))
+    .rejects.toThrow("invalid signature");
+});
+
+test("wrong-size transcript fields are rejected", async () => {
+  const alice = await generateIdentity(1, 1, 0);
+  const bob = await generateIdentity(2, 1, 0);
+  const { preKeyMessage } = await createSessionInitiator(alice, bundleFor(bob, false));
+  await expect(createSessionResponder(bob, { ...preKeyMessage, ct1: preKeyMessage.ct1.slice(1) }))
+    .rejects.toThrow("CT1 must be");
+  await expect(createSessionResponder(bob, { ...preKeyMessage, baseKey: new Uint8Array(10) }))
+    .rejects.toThrow("base key must be");
+});
+
+test("non-canonical flag bytes are rejected", async () => {
+  const { aliceSess, pkmBytes } = await establish(new Uint8Array(0));
+  const hasCT4 = CTX_OFFSET + DSA_PUBLIC_KEY_SIZE + DSA_SIGNATURE_SIZE + 2 * HYBRID_PUBLIC_KEY_SIZE + 2 * HYBRID_CIPHERTEXT_SIZE;
+  expect(pkmBytes[hasCT4]).toBe(0x01);
+  const pkm = new Uint8Array(pkmBytes);
+  pkm[hasCT4] = 0x02;
+  expect(() => unmarshalPreKeyMessageWire(pkm)).toThrow("hasCT4 must be 0 or 1");
+
+  const sm = unmarshalSignedMessage(await aliceSess.seal(enc("x")));
+  const inner = new Uint8Array(sm.messageRaw);
+  inner[4 + HYBRID_PUBLIC_KEY_SIZE] = 0x02;
+  expect(() => unmarshalMessageProtocol(inner)).toThrow("hasRatchetCT must be 0 or 1");
+});
+
+test("returned PreKeyMessage context is a copy", async () => {
+  const alice = await generateIdentity(1, 1, 0);
+  const bob = await generateIdentity(2, 1, 0);
+  const ctx = enc("sid=1");
+  const { session, preKeyMessage } = await createSessionInitiator(alice, bundleFor(bob, false), ctx);
+  preKeyMessage.sessionContext![0] ^= 0xff;
+  expect(session.sessionContext).toEqual(ctx);
 });
 
 test("replaced or stripped session context is rejected", async () => {

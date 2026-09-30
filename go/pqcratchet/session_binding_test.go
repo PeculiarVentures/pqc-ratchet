@@ -59,19 +59,25 @@ func TestSessionContextBoundAndDelivered(t *testing.T) {
 
 func TestSessionContextTamperRejected(t *testing.T) {
 	ctx := []byte("sid=s_123;origin=https://a.example")
-	_, _, pkmBytes, bobID := establishWithContext(t, ctx)
+	aliceID, bobID := mustIdentities(t)
+	bundle := mustBundle(t, bobID)
+	_, result, err := pqc.CreateSessionInitiatorWithContext(aliceID, bundle, ctx)
+	must(t, err, "CreateSessionInitiatorWithContext")
+	pkmBytes := pqc.MarshalPreKeyMessageWire(result.ToPreKeyMessageWire(aliceID, bundle))
 
 	// A relay rewrites one byte of the origin. The length is unchanged, so the
 	// frame still parses; only the signature can catch it.
 	tampered := append([]byte(nil), pkmBytes...)
 	tampered[ctxOffset+len(ctx)-1] ^= 0x01
-
-	// Bob's OPK was consumed by the honest run. That does not matter here,
-	// because the responder checks the transcript signature before it looks
-	// at the one-time pre-key ciphertext.
-	_, err := responderFromBytes(bobID, tampered)
-	if !errors.Is(err, pqc.ErrInvalidSignature) {
+	if _, err := responderFromBytes(bobID, tampered); !errors.Is(err, pqc.ErrInvalidSignature) {
 		t.Fatalf("tampered context: got %v, want ErrInvalidSignature", err)
+	}
+	if bobID.PreKeys[0] == nil {
+		t.Fatal("rejected PreKeyMessage consumed the OPK")
+	}
+	// The untampered frame is still accepted afterwards.
+	if _, err := responderFromBytes(bobID, pkmBytes); err != nil {
+		t.Fatalf("honest PreKeyMessage rejected after a tampered one: %v", err)
 	}
 }
 
@@ -244,6 +250,100 @@ func TestEmptyContextSessionsDiffer(t *testing.T) {
 	must(t, err, "session 2")
 	if bytes.Equal(s1.AD, s2.AD) {
 		t.Fatal("two sessions between the same identities share an AD")
+	}
+}
+
+func TestOneTimePreKeyIndexRewriteRejected(t *testing.T) {
+	// A relay rewrites the OPK index in a valid PreKeyMessage. Bob must reject
+	// it at the signature check and leave every OPK slot untouched, so the
+	// relay cannot drain his one-time pre-keys by replaying one message with
+	// each index.
+	aliceID, err := pqc.GenerateIdentity(1, 1, 0)
+	must(t, err, "GenerateIdentity alice")
+	bobID, err := pqc.GenerateIdentity(2, 1, 3)
+	must(t, err, "GenerateIdentity bob")
+
+	bundle := mustBundle(t, bobID) // uses OPK 0
+	_, result, err := pqc.CreateSessionInitiator(aliceID, bundle)
+	must(t, err, "CreateSessionInitiator")
+	w := result.ToPreKeyMessageWire(aliceID, bundle)
+
+	for _, idx := range []uint32{1, 2} {
+		w.OneTimePreKeyIndex = idx
+		_, err := responderFromBytes(bobID, pqc.MarshalPreKeyMessageWire(w))
+		if !errors.Is(err, pqc.ErrInvalidSignature) {
+			t.Fatalf("OPK index rewritten to %d: got %v, want ErrInvalidSignature", idx, err)
+		}
+	}
+	for i, kp := range bobID.PreKeys {
+		if kp == nil {
+			t.Fatalf("OPK %d was consumed by a rejected PreKeyMessage", i)
+		}
+	}
+
+	// The unmodified message still works and consumes exactly OPK 0.
+	w.OneTimePreKeyIndex = 0
+	if _, err := responderFromBytes(bobID, pqc.MarshalPreKeyMessageWire(w)); err != nil {
+		t.Fatalf("honest PreKeyMessage rejected: %v", err)
+	}
+	if bobID.PreKeys[0] != nil || bobID.PreKeys[1] == nil || bobID.PreKeys[2] == nil {
+		t.Fatal("honest PreKeyMessage consumed the wrong OPK")
+	}
+}
+
+func TestSignedPreKeyIndexRewriteRejected(t *testing.T) {
+	aliceID, err := pqc.GenerateIdentity(1, 1, 0)
+	must(t, err, "GenerateIdentity alice")
+	bobID, err := pqc.GenerateIdentity(2, 2, 0)
+	must(t, err, "GenerateIdentity bob")
+	bw, err := pqc.MakeBundleWire(bobID, 0, -1)
+	must(t, err, "MakeBundleWire")
+	bundle, err := pqc.ParseBundleWire(bw)
+	must(t, err, "ParseBundleWire")
+	_, result, err := pqc.CreateSessionInitiator(aliceID, bundle)
+	must(t, err, "CreateSessionInitiator")
+	w := result.ToPreKeyMessageWire(aliceID, bundle)
+	w.SignedPreKeyIndex = 1
+	if _, err := responderFromBytes(bobID, pqc.MarshalPreKeyMessageWire(w)); !errors.Is(err, pqc.ErrInvalidSignature) {
+		t.Fatalf("SPK index rewritten: got %v, want ErrInvalidSignature", err)
+	}
+}
+
+func TestNonCanonicalFlagsRejected(t *testing.T) {
+	aliceID, bobID := mustIdentities(t)
+	bundle := mustBundle(t, bobID)
+	aliceSess, result, err := pqc.CreateSessionInitiator(aliceID, bundle)
+	must(t, err, "CreateSessionInitiator")
+
+	// hasCT4 sits right after the fixed-size fields that follow the context.
+	pkm := pqc.MarshalPreKeyMessageWire(result.ToPreKeyMessageWire(aliceID, bundle))
+	hasCT4 := ctxOffset + len(result.SessionContext) + pqc.DSAPublicKeySize + pqc.DSASignatureSize +
+		2*pqc.HybridPublicKeySize + 2*pqc.HybridCiphertextSize
+	if pkm[hasCT4] != 0x01 {
+		t.Fatalf("test offset wrong: hasCT4 byte is 0x%02x", pkm[hasCT4])
+	}
+	pkm[hasCT4] = 0x02
+	if _, err := pqc.UnmarshalPreKeyMessageWire(bytes.NewReader(pkm)); err == nil {
+		t.Fatal("hasCT4 = 0x02 accepted")
+	}
+
+	bw, err := pqc.MakeBundleWire(bobID, 0, -1)
+	must(t, err, "MakeBundleWire")
+	bb := pqc.MarshalBundleWire(bw)
+	bb[len(bb)-1] = 0x02 // hasOneTimePreKey is the last byte when there is no OPK
+	if _, err := pqc.UnmarshalBundleWire(bytes.NewReader(bb)); err == nil {
+		t.Fatal("hasOneTimePreKey = 0x02 accepted")
+	}
+
+	enc, err := aliceSess.EncryptMessage([]byte("x"))
+	must(t, err, "EncryptMessage")
+	inner := pqc.MarshalMessageProtocol(&pqc.ParsedMessageProtocol{
+		Counter: uint32(enc.Counter), SenderRatchetPub: enc.NewRatchetPub,
+		RatchetCT: enc.RatchetCT, CipherText: enc.Ciphertext,
+	})
+	inner[4+pqc.HybridPublicKeySize] = 0x02
+	if _, err := pqc.UnmarshalMessageProtocol(inner); err == nil {
+		t.Fatal("hasRatchetCT = 0x02 accepted")
 	}
 }
 

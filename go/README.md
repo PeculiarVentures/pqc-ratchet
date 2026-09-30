@@ -166,8 +166,9 @@ if !bytes.Equal(bobSess.SessionContext, expectedCtx) {
 cb, _ := bobSess.ExportKeyingMaterial("goodkey approval", opDigest, 32)
 ```
 
-A PreKeyMessage is also bound to the responder it was built for, so presenting it to a
-different identity fails signature verification. See DESIGN.md, "Session context and
+A PreKeyMessage is also bound to the responder and pre-keys it was built for, so presenting
+it to a different identity, or rewriting its pre-key indexes, fails signature verification
+without consuming a one-time pre-key. See DESIGN.md, "Session context and
 channel binding".
 
 For advanced use — custom transports, server-side batching, audit tooling — the

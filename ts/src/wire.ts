@@ -97,6 +97,7 @@ export function unmarshalMessageProtocol(b: Uint8Array): MessageProtocol {
 
   if (b.length < off + 1) throw new Error("wire: message too short (hasRatchetCT)");
   const hasRatchetCT = b[off]; off += 1;
+  if (hasRatchetCT > 0x01) throw new Error(`wire: hasRatchetCT must be 0 or 1, got 0x${hasRatchetCT.toString(16)}`);
   let ratchetCT: Uint8Array | null = null;
   if (hasRatchetCT === 0x01) {
     if (b.length < off + HYBRID_CIPHERTEXT_SIZE) throw new Error("wire: message too short (ratchetCT)");
@@ -232,6 +233,7 @@ export function unmarshalPreKeyMessageWire(b: Uint8Array): PreKeyMessageWire {
 
   if (b.length < off + 1) throw new Error("wire: preKeyMsg too short (hasCT4)");
   const hasCT4 = b[off]; off += 1;
+  if (hasCT4 > 0x01) throw new Error(`wire: hasCT4 must be 0 or 1, got 0x${hasCT4.toString(16)}`);
   let ct4: Uint8Array | null = null;
   if (hasCT4 === 0x01) {
     ct4 = b.slice(off, off + HYBRID_CIPHERTEXT_SIZE); off += HYBRID_CIPHERTEXT_SIZE;
