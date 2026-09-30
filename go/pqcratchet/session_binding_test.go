@@ -291,6 +291,22 @@ func TestOneTimePreKeyIndexRewriteRejected(t *testing.T) {
 	}
 }
 
+func TestOPKSlotStateNotRevealed(t *testing.T) {
+	// A PreKeyMessage naming a consumed OPK must fail the same way as one with
+	// a bad signature, so error text does not reveal which slots are live.
+	aliceID, bobID := mustIdentities(t)
+	bundle := mustBundle(t, bobID)
+	_, result, err := pqc.CreateSessionInitiator(aliceID, bundle)
+	must(t, err, "CreateSessionInitiator")
+	pkm := pqc.MarshalPreKeyMessageWire(result.ToPreKeyMessageWire(aliceID, bundle))
+	if _, err := responderFromBytes(bobID, pkm); err != nil {
+		t.Fatalf("honest PreKeyMessage rejected: %v", err)
+	}
+	if _, err := responderFromBytes(bobID, pkm); !errors.Is(err, pqc.ErrInvalidSignature) {
+		t.Fatalf("replay against consumed OPK: got %v, want ErrInvalidSignature", err)
+	}
+}
+
 func TestSignedPreKeyIndexRewriteRejected(t *testing.T) {
 	aliceID, err := pqc.GenerateIdentity(1, 1, 0)
 	must(t, err, "GenerateIdentity alice")

@@ -325,13 +325,12 @@ func verifyInitiatorTranscript(
 	if err := responder.validate(); err != nil {
 		return nil, err
 	}
-	// Guard both directions of OPK mismatch explicitly. The transcript would
-	// fail to verify anyway, but a named error says what went wrong.
-	switch {
-	case responder.OneTimePreKeyPub != nil && ct4 == nil:
-		return nil, fmt.Errorf("x3dh: have OPK private key but initiator sent no CT4")
-	case responder.OneTimePreKeyPub == nil && ct4 != nil:
-		return nil, fmt.Errorf("x3dh: initiator sent CT4 but no OPK private key available")
+	// An OPK mismatch (CT4 without a live one-time pre-key, or the reverse)
+	// means the initiator signed a different transcript than the one Bob can
+	// build. Report it as ErrInvalidSignature. A distinct error here would let
+	// anyone without a valid signature probe which OPK slots are still live.
+	if (responder.OneTimePreKeyPub == nil) != (ct4 == nil) {
+		return nil, ErrInvalidSignature
 	}
 	// Verify BEFORE any decapsulation, so Bob's decapsulation cannot be used
 	// as an oracle against arbitrary ciphertexts.

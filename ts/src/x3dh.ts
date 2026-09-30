@@ -165,9 +165,11 @@ export async function verifyInitiatorTranscript(
   checkLen("CT2", ct2, HYBRID_CIPHERTEXT_SIZE);
   if (ct4 !== null) checkLen("CT4", ct4, HYBRID_CIPHERTEXT_SIZE);
 
+  // An OPK mismatch means the initiator signed a different transcript than
+  // the one Bob can build. Report it as an invalid signature; a distinct
+  // error would let anyone probe which OPK slots are still live.
   const opk = responder.oneTimePreKeyPub ?? null;
-  if (opk !== null && ct4 === null) throw new Error("pqcratchet: have OPK private key but initiator sent no CT4");
-  if (opk === null && ct4 !== null) throw new Error("pqcratchet: initiator sent CT4 but no OPK private key available");
+  if ((opk === null) !== (ct4 === null)) throw new Error("pqcratchet: invalid signature");
 
   // Verify BEFORE any decapsulation, so Bob's decapsulation cannot be used as
   // a chosen-ciphertext oracle.
