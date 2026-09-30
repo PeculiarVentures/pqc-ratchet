@@ -87,6 +87,22 @@ signing internally. For advanced use (custom transports, batching, audit tooling
 the lower-level `encryptMessage()` / `decryptMessage()` + `marshal*` functions are
 also exported.
 
+### Binding a session to its context
+
+When a relay or other intermediary carries the handshake, pass a session context. It is
+signed by the initiator, delivered in the PreKeyMessage, and mixed into every key. The
+responder must check it before acting.
+
+```typescript
+const ctx = new TextEncoder().encode(JSON.stringify({ sid: "s_123", origin: location.origin }));
+const { session: aliceSess, preKeyMessage } = await createSessionInitiator(alice, bundle, ctx);
+const bobSess = await createSessionResponder(bob, preKeyMessage);
+// bobSess.sessionContext must equal what Bob expects before he acts on the session.
+
+// Keying material both peers share, e.g. a channel binding value for approvals.
+const cb = await bobSess.exportKeyingMaterial("goodkey approval", opDigest, 32);
+```
+
 ## Dependencies
 
 | Package | Purpose |
@@ -103,10 +119,10 @@ WebCrypto (built-in) handles AES-256-GCM, HMAC-SHA-256, HKDF-SHA-256.
 npm test
 ```
 
-17 tests covering KEM round-trip, DSA sign/verify, symmetric chain, X3DH both sides, full session, multi-turn messaging, OPK restoration on auth failure, and seal/open high-level API.
+Tests cover KEM round-trip, DSA sign/verify, the symmetric chain, X3DH on both sides, full sessions, multi-turn messaging, OPK restoration on auth failure, the seal/open API, session context and responder binding, the exporter, and wire version rejection.
 
 ## Go interop
 
-The wire format (public key and ciphertext layouts, HKDF info strings, transcript structure) is identical to the Go implementation. A Go server and TypeScript client can exchange messages directly.
+The wire format (public key and ciphertext layouts, HKDF info strings, transcript structure, wire version 0x02) is identical to the Go implementation. The interop test also checks that both sides agree on the session context, the transcript hash and exporter output. A Go server and TypeScript client can exchange messages directly.
 
 Private key storage differs: Go stores the 64-byte ML-KEM seed; TypeScript stores the 2400-byte expanded secret key. Both produce identical public keys and ciphertexts.

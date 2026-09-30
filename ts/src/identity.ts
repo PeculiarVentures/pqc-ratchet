@@ -4,7 +4,7 @@
 
 import { generateKEMKeyPair, HybridKEMKeyPair, zeroKEMKeyPair } from "./kem.js";
 import { generateDSAKeyPair, DSAKeyPair, dsaSign, dsaVerify } from "./sign.js";
-import { authenticateA, authenticateB, KEMInitiatorResult } from "./x3dh.js";
+import { authenticateA, authenticateB, KEMInitiatorResult, KEMResponderResult } from "./x3dh.js";
 import { Session } from "./session.js";
 import { concat } from "./crypto.js";
 
@@ -33,6 +33,11 @@ export interface PreKeyBundle {
 
 export interface PreKeyMessage {
   registrationId: number;
+  /**
+   * Application context the initiator signed (may be empty). Authenticated by
+   * initiatorSig; the responder must still check it against what it expects.
+   */
+  sessionContext?: Uint8Array;
   identitySigningPub: Uint8Array;
   identityExchangePub: Uint8Array;
   exchangeKeySig: Uint8Array;
@@ -93,10 +98,16 @@ export interface InitiatorSessionResult {
 /**
  * createSessionInitiator creates a session from Alice's perspective.
  * Validates the bundle signatures before proceeding.
+ *
+ * sessionContext is bound into the signed X3DH transcript and every derived
+ * key, and travels to the responder in the PreKeyMessage. Deployments that
+ * route sessions through an intermediary should put the session id and
+ * origin in it. At most MAX_SESSION_CONTEXT_SIZE bytes.
  */
 export async function createSessionInitiator(
   initiatorIdentity: Identity,
   bundle: PreKeyBundle,
+  sessionContext: Uint8Array = new Uint8Array(0),
 ): Promise<InitiatorSessionResult> {
   // Verify signed pre-key signature
   if (!dsaVerify(bundle.identitySigningPub, bundle.signedPreKeyPub, bundle.signedPreKeySig)) {
@@ -106,13 +117,17 @@ export async function createSessionInitiator(
   const x3dhResult = await authenticateA(
     initiatorIdentity.signingKey.privateKey,
     initiatorIdentity.exchangeKey.publicKey,
-    bundle.identityExchangePub,
-    bundle.signedPreKeyPub,
+    {
+      signingPub: bundle.identitySigningPub,
+      exchangePub: bundle.identityExchangePub,
+      signedPreKeyPub: bundle.signedPreKeyPub,
+    },
     bundle.oneTimePreKeyPub,
+    sessionContext,
   );
 
-  // AD = Encode(IK_A.ex) || Encode(IK_B.ex)
-  const ad = concat(initiatorIdentity.exchangeKey.publicKey, bundle.identityExchangePub);
+  // AD = Encode(IK_A.ex) || Encode(IK_B.ex) || transcriptHash
+  const ad = concat(initiatorIdentity.exchangeKey.publicKey, bundle.identityExchangePub, x3dhResult.transcriptHash);
 
   // Session: Alice starts with ephemeral keypair as ratchet key
   const session = new Session(
@@ -121,6 +136,9 @@ export async function createSessionInitiator(
     ad,
     initiatorIdentity.signingKey.publicKey,
     bundle.identitySigningPub,
+    x3dhResult.transcriptHash,
+    x3dhResult.sessionContext,
+    x3dhResult.exporterSecret,
   );
 
   // Initiator needs to set the remote ratchet key so the first send can encapsulate.
@@ -145,6 +163,7 @@ export async function createSessionInitiator(
     ct2: x3dhResult.ct2,
     ct4: x3dhResult.ct4,
     initiatorSig: x3dhResult.initiatorSig,
+    sessionContext: x3dhResult.sessionContext,
     signedPreKeyIndex: bundle.signedPreKeyIndex,
     oneTimePreKeyIndex: bundle.oneTimePreKeyIndex,
   };
@@ -155,6 +174,10 @@ export async function createSessionInitiator(
 /**
  * createSessionResponder creates a session from Bob's perspective.
  * Verifies the initiator's exchange key signature and transcript signature.
+ *
+ * The session context in msg is authenticated by the initiator's signature,
+ * which proves only that the initiator asserted it. Callers MUST compare
+ * session.sessionContext with the context they expect before acting.
  */
 export async function createSessionResponder(
   responderIdentity: Identity,
@@ -186,18 +209,24 @@ export async function createSessionResponder(
 
   const signedPreKP = responderIdentity.signedPreKeys[msg.signedPreKeyIndex];
 
-  let rootKey: Uint8Array;
+  let x3dh: KEMResponderResult;
   try {
-    rootKey = await authenticateB(
+    x3dh = await authenticateB(
       responderIdentity.exchangeKey.privateKey,
       signedPreKP.privateKey,
       oneTimePreKeyPriv,
+      {
+        signingPub: responderIdentity.signingKey.publicKey,
+        exchangePub: responderIdentity.exchangeKey.publicKey,
+        signedPreKeyPub: signedPreKP.publicKey,
+      },
       msg.identitySigningPub,
       msg.identityExchangePub,
       msg.baseKey,
       msg.ct1,
       msg.ct2,
       msg.ct4,
+      msg.sessionContext ?? new Uint8Array(0),
       msg.initiatorSig,
     );
   } catch (e) {
@@ -211,8 +240,8 @@ export async function createSessionResponder(
   // Zero OPK after successful auth
   if (oneTimePreKeyKP !== null) zeroKEMKeyPair(oneTimePreKeyKP);
 
-  // AD = Encode(IK_A.ex) || Encode(IK_B.ex)
-  const ad = concat(msg.identityExchangePub, responderIdentity.exchangeKey.publicKey);
+  // AD = Encode(IK_A.ex) || Encode(IK_B.ex) || transcriptHash
+  const ad = concat(msg.identityExchangePub, responderIdentity.exchangeKey.publicKey, x3dh.transcriptHash);
 
   // Bob's initial ratchet keypair is the signed pre-key used in X3DH.
   // Alice encapsulates against this key to derive the first receiving chain.
@@ -220,11 +249,14 @@ export async function createSessionResponder(
   // (signedPreKP was already declared above for authenticateB)
 
   const session = new Session(
-    rootKey,
+    x3dh.rootKey,
     signedPreKP, // Bob's initial ratchet KP = the signed pre-key used in X3DH
     ad,
     msg.identitySigningPub,
     responderIdentity.signingKey.publicKey,
+    x3dh.transcriptHash,
+    new Uint8Array(msg.sessionContext ?? new Uint8Array(0)),
+    x3dh.exporterSecret,
   );
 
   // Bob's first receive epoch uses Alice's base key (EK_A) as the remote ratchet key

@@ -64,8 +64,15 @@ func TestInteropGoTS(t *testing.T) {
 	bundle, err := pqc.ParseBundleWire(bundleWire)
 	must(t, err, "ParseBundleWire")
 
-	aliceSess, initResult, err := pqc.CreateSessionInitiator(alice, bundle)
-	must(t, err, "CreateSessionInitiator")
+	// Non-ASCII bytes in the context exercise the length-prefixed encoding.
+	sessionContext := []byte("sid=s_interop;origin=https://payroll.example;ops=x509/sign;\x00\xff")
+	aliceSess, initResult, err := pqc.CreateSessionInitiatorWithContext(alice, bundle, sessionContext)
+	must(t, err, "CreateSessionInitiatorWithContext")
+
+	const exporterLabel = "goodkey approval"
+	exporterContext := []byte("op=x509/sign;tbs=sha256:00")
+	goExport, err := aliceSess.ExportKeyingMaterial(exporterLabel, exporterContext, 48)
+	must(t, err, "ExportKeyingMaterial")
 
 	pkmWire := buildInteropPKMWire(alice, bundle, initResult)
 	pkmBytes := pqc.MarshalPreKeyMessageWire(pkmWire)
@@ -91,16 +98,22 @@ func TestInteropGoTS(t *testing.T) {
 	must(t, err, "marshal bob")
 
 	type fixture struct {
-		BobIdentityJSON  string   `json:"bobIdentityJSON"`
-		PreKeyMessageHex string   `json:"preKeyMessageHex"`
-		GoToTSMessages   []string `json:"goToTSMessages"`
-		Plaintexts       []string `json:"plaintexts"`
+		BobIdentityJSON     string   `json:"bobIdentityJSON"`
+		PreKeyMessageHex    string   `json:"preKeyMessageHex"`
+		GoToTSMessages      []string `json:"goToTSMessages"`
+		Plaintexts          []string `json:"plaintexts"`
+		ExporterLabel       string   `json:"exporterLabel"`
+		ExporterContextHex  string   `json:"exporterContextHex"`
+		ExporterLength      int      `json:"exporterLength"`
 	}
 	fix := fixture{
-		BobIdentityJSON:  string(bobJSON),
-		PreKeyMessageHex: hex.EncodeToString(pkmBytes),
-		GoToTSMessages:   msgWires,
-		Plaintexts:       plaintexts,
+		BobIdentityJSON:    string(bobJSON),
+		PreKeyMessageHex:   hex.EncodeToString(pkmBytes),
+		GoToTSMessages:     msgWires,
+		Plaintexts:         plaintexts,
+		ExporterLabel:      exporterLabel,
+		ExporterContextHex: hex.EncodeToString(exporterContext),
+		ExporterLength:     len(goExport),
 	}
 	fixData, err := json.MarshalIndent(fix, "", "  ")
 	must(t, err, "marshal fixture")
@@ -123,10 +136,25 @@ func TestInteropGoTS(t *testing.T) {
 	replyData, err := os.ReadFile(replyPath)
 	must(t, err, "read reply")
 	var reply struct {
-		TSToGoMessages  []string `json:"tsToGoMessages"`
-		ReplyPlaintexts []string `json:"replyPlaintexts"`
+		TSToGoMessages    []string `json:"tsToGoMessages"`
+		ReplyPlaintexts   []string `json:"replyPlaintexts"`
+		SessionContextHex string   `json:"sessionContextHex"`
+		TranscriptHashHex string   `json:"transcriptHashHex"`
+		ExporterHex       string   `json:"exporterHex"`
 	}
 	must(t, json.Unmarshal(replyData, &reply), "unmarshal reply")
+
+	// The TS responder must have received the same context, computed the
+	// same transcript hash, and derived the same exporter output.
+	if reply.SessionContextHex != hex.EncodeToString(sessionContext) {
+		t.Fatalf("TS session context %s, want %x", reply.SessionContextHex, sessionContext)
+	}
+	if reply.TranscriptHashHex != hex.EncodeToString(aliceSess.TranscriptHash) {
+		t.Fatalf("TS transcript hash %s, Go %x", reply.TranscriptHashHex, aliceSess.TranscriptHash)
+	}
+	if reply.ExporterHex != hex.EncodeToString(goExport) {
+		t.Fatalf("TS exporter %s, Go %x", reply.ExporterHex, goExport)
+	}
 
 	if len(reply.TSToGoMessages) == 0 {
 		t.Fatal("TS sent no reply messages")
@@ -150,7 +178,7 @@ func TestInteropGoTS(t *testing.T) {
 		}
 		t.Logf("reply %d ✓: %q", i, plaintext)
 	}
-	t.Logf("interop: Go→TS %d messages, TS→Go %d replies — all verified",
+	t.Logf("interop: Go→TS %d messages, TS→Go %d replies, context, transcript hash and exporter all verified",
 		len(plaintexts), len(reply.TSToGoMessages))
 }
 
@@ -200,6 +228,7 @@ func buildInteropPKMWire(alice *pqc.Identity, bundle *pqc.PreKeyBundle, result *
 		HasCT4:             hasCT4,
 		CT4:                ct4,
 		InitiatorSig:       initiatorSig,
+		SessionContext:     result.SessionContext,
 	}
 }
 

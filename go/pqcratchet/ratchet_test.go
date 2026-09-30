@@ -577,6 +577,7 @@ func buildPKMWire(t *testing.T, alice *pqc.Identity, bundle *pqc.PreKeyBundle, r
 	copy(m.CT1[:], result.CT1[:])
 	copy(m.CT2[:], result.CT2[:])
 	copy(m.InitiatorSig[:], result.InitiatorSig)
+	m.SessionContext = result.SessionContext
 	return m
 }
 

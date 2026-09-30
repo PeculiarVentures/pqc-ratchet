@@ -26,6 +26,7 @@ import {
   DSA_SIGNATURE_SIZE,
   MAX_SKIP,
   ERR_HMAC_VERIFY_FAILED, ERR_DUPLICATE_MESSAGE,
+  buildHMACInput,
 } from "../index.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ async function encryptAndBuildWire(sess: any, plaintext: Uint8Array) {
     enc.ratchetCT ? new Uint8Array([1, ...enc.ratchetCT]) : new Uint8Array([0]),
     enc.ciphertext
   );
-  const hmacInput = concat(sess.ad, sess.initiatorSigningKeyBytes, sess.responderSigningKeyBytes, inner);
+  const hmacInput = buildHMACInput(sess.ad, sess.initiatorSigningKeyBytes, sess.responderSigningKeyBytes, inner);
   const { createHmacSHA256 } = await import("../crypto.js").then(m => ({ createHmacSHA256: m.hmacSHA256 }));
   const sig = await createHmacSHA256(enc.hmacKey, hmacInput);
   return { enc, inner, sig };
@@ -157,28 +158,36 @@ test("X3DH both sides derive same root key", async () => {
   const bobSpk = generateKEMKeyPair();
   const bobOpk = generateKEMKeyPair();
 
+  const bobSign = generateDSAKeyPair();
+  const bobKeys = { signingPub: bobSign.publicKey, exchangePub: bobEx.publicKey, signedPreKeyPub: bobSpk.publicKey };
+  const ctx = new TextEncoder().encode("sid=s_1");
+
   const result = await authenticateA(
     aliceSign.privateKey,
     aliceEx.publicKey,
-    bobEx.publicKey,
-    bobSpk.publicKey,
+    bobKeys,
     bobOpk.publicKey,
+    ctx,
   );
 
-  const rootKey2 = await authenticateB(
+  const b = await authenticateB(
     bobEx.privateKey,
     bobSpk.privateKey,
     bobOpk.privateKey,
+    bobKeys,
     aliceSign.publicKey,
     aliceEx.publicKey,
     result.ephemeralKP.publicKey,
     result.ct1,
     result.ct2,
     result.ct4,
+    ctx,
     result.initiatorSig,
   );
 
-  expect(result.rootKey).toEqual(rootKey2);
+  expect(result.rootKey).toEqual(b.rootKey);
+  expect(result.exporterSecret).toEqual(b.exporterSecret);
+  expect(result.transcriptHash).toEqual(b.transcriptHash);
 });
 
 test("X3DH without OPK derives same root key", async () => {
@@ -187,28 +196,32 @@ test("X3DH without OPK derives same root key", async () => {
   const bobEx = generateKEMKeyPair();
   const bobSpk = generateKEMKeyPair();
 
+  const bobSign = generateDSAKeyPair();
+  const bobKeys = { signingPub: bobSign.publicKey, exchangePub: bobEx.publicKey, signedPreKeyPub: bobSpk.publicKey };
+
   const result = await authenticateA(
     aliceSign.privateKey,
     aliceEx.publicKey,
-    bobEx.publicKey,
-    bobSpk.publicKey,
+    bobKeys,
     null,
   );
 
-  const rootKey2 = await authenticateB(
+  const b = await authenticateB(
     bobEx.privateKey,
     bobSpk.privateKey,
     null,
+    bobKeys,
     aliceSign.publicKey,
     aliceEx.publicKey,
     result.ephemeralKP.publicKey,
     result.ct1,
     result.ct2,
     null,
+    new Uint8Array(0),
     result.initiatorSig,
   );
 
-  expect(result.rootKey).toEqual(rootKey2);
+  expect(result.rootKey).toEqual(b.rootKey);
 });
 
 test("X3DH invalid signature rejects", async () => {
@@ -217,17 +230,19 @@ test("X3DH invalid signature rejects", async () => {
   const bobEx = generateKEMKeyPair();
   const bobSpk = generateKEMKeyPair();
 
+  const bobSign = generateDSAKeyPair();
+  const bobKeys = { signingPub: bobSign.publicKey, exchangePub: bobEx.publicKey, signedPreKeyPub: bobSpk.publicKey };
+
   const result = await authenticateA(
-    aliceSign.privateKey, aliceEx.publicKey,
-    bobEx.publicKey, bobSpk.publicKey, null,
+    aliceSign.privateKey, aliceEx.publicKey, bobKeys, null,
   );
 
   const badSig = randomBytes(DSA_SIGNATURE_SIZE);
   await expect(authenticateB(
-    bobEx.privateKey, bobSpk.privateKey, null,
+    bobEx.privateKey, bobSpk.privateKey, null, bobKeys,
     aliceSign.publicKey, aliceEx.publicKey,
     result.ephemeralKP.publicKey, result.ct1, result.ct2, null,
-    badSig,
+    new Uint8Array(0), badSig,
   )).rejects.toThrow("invalid signature");
 });
 
@@ -248,7 +263,7 @@ test("full handshake and single message", async () => {
     : concat(counterBytes, enc.newRatchetPub, hasRatchetCT, enc.ciphertext);
 
   const { hmacSHA256 } = await import("../crypto.js");
-  const hmacInput = concat(aliceSess.ad, aliceSess.initiatorSigningKeyBytes, aliceSess.responderSigningKeyBytes, inner);
+  const hmacInput = buildHMACInput(aliceSess.ad, aliceSess.initiatorSigningKeyBytes, aliceSess.responderSigningKeyBytes, inner);
   const sig = await hmacSHA256(enc.hmacKey, hmacInput);
 
   const decrypted = await bobSess.decryptMessage(
@@ -271,7 +286,7 @@ test("multi-turn bidirectional messaging", async () => {
     const inner = enc.ratchetCT
       ? concat(counterBytes, enc.newRatchetPub, hasRatchetCT, enc.ratchetCT, enc.ciphertext)
       : concat(counterBytes, enc.newRatchetPub, hasRatchetCT, enc.ciphertext);
-    const hmacInput = concat(senderSess.ad, senderSess.initiatorSigningKeyBytes, senderSess.responderSigningKeyBytes, inner);
+    const hmacInput = buildHMACInput(senderSess.ad, senderSess.initiatorSigningKeyBytes, senderSess.responderSigningKeyBytes, inner);
     const sig = await hmacSHA256(enc.hmacKey, hmacInput);
     return receiverSess.decryptMessage(enc.counter, enc.newRatchetPub, enc.ratchetCT, enc.ciphertext, sig, inner);
   }

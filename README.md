@@ -86,6 +86,17 @@ plaintext, _ := bobSess.Open(wire)
 fmt.Println(string(plaintext)) // "hello"
 ```
 
+### Session context and exporter
+
+Wire version 0x02 lets the initiator bind an application session context (for example a
+rendezvous session id and origin) into the signed handshake, binds each PreKeyMessage to the
+responder it was built for, puts the transcript hash in the session AD, and adds a TLS-style
+exporter for channel binding. Go uses `CreateSessionInitiatorWithContext` and
+`Session.ExportKeyingMaterial`; TypeScript takes the context as the third argument to
+`createSessionInitiator` and exposes `session.exportKeyingMaterial`. The responder must
+check the context it receives. Details are in `go/DESIGN.md`, "Session context and channel
+binding". Version 0x01 frames are rejected.
+
 ### Pairing code
 
 Both peers display a 6-digit PIN to confirm they hold each other's identity keys. The server is the responder that published the bundle; the client is the initiator. The PIN binds both keys and two nonces fixed by commit-then-reveal:

@@ -151,17 +151,20 @@ Alice (initiator) performs three encapsulations against Bob's public keys:
 (ct1, ss1) = Encap(SPK_B)    // signed pre-key
 (ct2, ss2) = Encap(IK_B.ex)  // Bob's identity exchange key
 EK_A       = GenerateKEMKeyPair()   // ephemeral keypair (becomes initial ratchet key)
-SK = HKDF(0xFF×32 ‖ ss1 ‖ ss2)
+[(ct4, ss3) = Encap(OPK_B)]  // one-time pre-key, if the bundle has one
 
-// with one-time pre-key:
-(ct4, ss3) = Encap(OPK_B)
-SK = HKDF(0xFF×32 ‖ ss1 ‖ ss2 ‖ ss3)
+T        = transcript (below)
+th       = SHA-256(T)
+RK ‖ XS  = HKDF(IKM = 0xFF×32 ‖ ss1 ‖ ss2 [‖ ss3], salt = th, info = "pqcratchet/v2/KEMInit", L = 64)
+InitiatorSig = ML-DSA-65.Sign(IK_A.sig, T)
 ```
 
-Alice sends to Bob: `{IK_A.ex, EK_A.pub, ct1, ct2, [ct4], InitiatorSig}`
+Alice sends to Bob: `{ctx, IK_A.ex, EK_A.pub, ct1, ct2, [ct4], InitiatorSig}`
 
-Bob verifies `InitiatorSig` *before* decapsulating, then recovers `ss1`, `ss2`, `[ss3]`
-and derives the same `SK`.
+Bob rebuilds `T` from those values and his own public keys, verifies `InitiatorSig` *before*
+decapsulating, then recovers `ss1`, `ss2`, `[ss3]` and derives the same `RK`, `XS` and `th`.
+`RK` is the initial root key. `XS` is the exporter secret (see "Session context and channel
+binding"). `th` is the transcript hash, which also becomes part of the session AD.
 
 ### Deniability is lost — this is intentional
 
@@ -174,18 +177,46 @@ and `ct2`. But there is no implicit proof of who encapsulated. Without additiona
 either party could claim the other sent the message. This is why `InitiatorSig` is required:
 Alice must sign the transcript to prove she was the initiator, not just a passive observer.
 
-The signature is non-repudiable: `InitiatorSig = Sign(IK_A.sig.sk, IK_A.ex ‖ ct1 ‖ ct2 ‖ EK_A.pub [‖ ct4])`.
-This is a deliberate tradeoff. The X3DH spec §4.5 explicitly warns against replacing DH-based
+The signature `InitiatorSig = Sign(IK_A.sig.sk, T)` is non-repudiable. This is a deliberate
+tradeoff. The X3DH spec §4.5 explicitly warns against replacing DH-based
 mutual authentication with signatures. Applications with strong deniability requirements
 should note this constraint.
 
-### Why `IK_A.ex` is in the transcript
+### What the transcript covers
 
-The transcript Alice signs is `IK_A.ex ‖ CT1 ‖ CT2 ‖ EK_A.pub [‖ CT4]`. Including `IK_A.ex`
-explicitly binds Alice's identity exchange key into the signed statement. Without it, the
-binding is indirect (via the separate `ExchangeKeySig` field in the wire format, which signs
-`IK_A.ex` with `IK_A.sig`). Including it directly provides a single unforgeable statement:
-"Alice, holding `IK_A.sig.sk`, produced these ciphertexts using `IK_A.ex`."
+The transcript `T` that Alice signs is (integers big-endian):
+
+```
+"pqcratchet/v2/X3DH"
+u8   WireVersion                      (0x02)
+u32  len(ProtocolID) ‖ ProtocolID     ("pqc-ratchet-0")
+u32  len(ctx)        ‖ ctx            (application session context, ≤ 4096 bytes)
+[32] SHA-256(IK_B.sig)
+IK_B.ex ‖ SPK_B
+IK_A.ex ‖ CT1 ‖ CT2 ‖ EK_A.pub
+u8   hasCT4 [‖ CT4]
+```
+
+Each field is there for a reason.
+
+- **Label, version and protocol id.** A signature made under one protocol or wire version
+  does not verify under another. A negotiation layer that offers `pqc-ratchet-0` against
+  another protocol can rely on the transcript to pin which one was used.
+- **Session context.** Binds the application's session (for example a rendezvous session
+  id and origin). See the next section.
+- **Bob's keys.** Version 1 signed only Alice's values and the ciphertexts. A PreKeyMessage
+  built for Bob could be delivered to Carol, and Carol would pass the signature check, then
+  decapsulate with her own keys. ML-KEM's implicit rejection would give her random secrets,
+  so she would build a session that silently fails at the first message. Binding
+  `SHA-256(IK_B.sig)`, `IK_B.ex` and `SPK_B` makes Carol reject the message at the signature
+  check, before any decapsulation, and before any one-time pre-key is consumed.
+- **`IK_A.ex`.** Binds Alice's identity exchange key directly into her signed statement.
+  Without it the binding is indirect, through the separate `ExchangeKeySig` field.
+- **`hasCT4`.** An explicit presence byte keeps the encoding unambiguous if trailing fields
+  are ever added.
+
+Every variable-length field is length-prefixed and every other field has a fixed size, so no
+two different field sets encode to the same bytes.
 
 ### Sig-before-decap prevents a decapsulation oracle
 
@@ -201,6 +232,74 @@ the OPK contribution was silently skipped. Both sides would derive different roo
 causing session establishment to fail at the first message decryption with no indication
 of what went wrong. `AuthenticateB` now returns distinct errors for both mismatch cases,
 surfacing the problem at the point it occurs.
+
+---
+
+## Session context and channel binding
+
+Wire version 0x02 adds three things aimed at deployments where an intermediary carries the
+handshake, such as a relay that introduces a desktop agent to a phone.
+
+### Session context
+
+`CreateSessionInitiatorWithContext` (Go) and the third argument to `createSessionInitiator`
+(TS) take an opaque byte string of at most 4096 bytes. The library carries it in the
+PreKeyMessage, signs it as part of `T`, and mixes it into every key through the transcript
+hash. It never interprets it. A rendezvous deployment would put the session id, the origin,
+the requested actions, the negotiation outcome and the expiry in it, in a canonical encoding
+that both sides can reproduce.
+
+The signature proves that the initiator asserted the context, and nothing more. The
+responder must compare `Session.SessionContext` with what it expects (for example the
+session id it joined) before it acts on the session. A relay that changes the context in
+transit causes signature verification to fail. A relay that holds its own identity key can
+still start a session with any context it likes, which is why the responder also has to pin
+the initiator's identity (see below).
+
+For a local listener, the origin taken from the browser's WebSocket `Origin` header is a
+natural context value. It ties the session to that origin, so a page on another origin
+cannot continue it.
+
+### Transcript hash in the AD
+
+The session AD is now `Encode(IK_A.ex) ‖ Encode(IK_B.ex) ‖ th`. Version 1 used only the two
+identity keys, so two sessions between the same identities shared an AD. With `th` in it,
+every GCM operation and every outer HMAC is tied to one specific handshake, including its
+context and protocol version. The outer HMAC input also now starts with the envelope version
+byte, so the version cannot be changed in transit without failing the HMAC.
+
+### Exporter
+
+`Session.ExportKeyingMaterial(label, context, length)` works like the TLS exporter:
+
+```
+info = "pqcratchet/v2/Exporter" ‖ u32 len(label) ‖ label ‖ u32 len(context) ‖ context
+out  = HKDF-Expand(PRK = XS, info, length)       (1 ≤ length ≤ 8160)
+```
+
+`XS` comes out of the same HKDF call as the initial root key and does not ratchet, so both
+peers get the same value for the life of the session, and nobody outside the session can
+compute it. Intended uses:
+
+- **Approvals.** An approver device signs `Export("…approval", op ‖ origin ‖ TBS hash)` with
+  its own identity key. A relay can count such signatures but cannot produce one, and a
+  signature for one session does not verify against another.
+- **Out-of-band confirmation.** A value derived from the exporter can be shown on both
+  devices.
+
+The exporter does not replace the commit-then-reveal pairing code. A man in the middle
+terminates both sessions and can compute both exporters, and it controls its own randomness
+in the second handshake, so it could search for a collision in a short code derived from the
+exporter alone. The commit-then-reveal flow exists to stop exactly that search.
+
+### What the library does not do
+
+It does not decide which identity keys to trust. If an intermediary delivers bundles and
+nothing pins identity keys, the intermediary can substitute its own keys and sit in the
+middle of both sessions, whatever ratchet is used. Applications must pin the peer's
+`IK.sig` on first contact (for example through the pairing code) or obtain it from a source
+the intermediary does not control, and check `Session.RemoteIdentity` against the pinned
+value on every later session.
 
 ---
 
@@ -290,7 +389,7 @@ block) and cannot be parallelised at the SIMD level; GCM counter mode can be.
 Per-message key derivation produces 76 bytes: 32 (AES key) + 12 (GCM nonce) + 32 (outer HMAC key).
 
 **Layer 1 — GCM tag (16 bytes, internal):** Authenticates the plaintext and binds it to the
-session identity. The session AD (`Encode(IK_A.ex) ‖ Encode(IK_B.ex)`) is passed as GCM's
+session identity. The session AD (`Encode(IK_A.ex) ‖ Encode(IK_B.ex) ‖ th`) is passed as GCM's
 `additionalData` parameter to `Seal`/`Open`. The GCM tag therefore covers both the plaintext
 and the session identity: a ciphertext produced in an Alice↔Bob session cannot be opened in
 an Alice↔Carol session because the AD differs. Stripped and verified automatically by
@@ -301,7 +400,7 @@ an Alice↔Carol session because the AD differs. Stripped and verified automatic
 plus the session AD and stable role signing keys:
 
 ```
-HMAC(HMACKey, AD ‖ InitiatorSigningKeyBytes ‖ ResponderSigningKeyBytes ‖ messageRaw)
+HMAC(HMACKey, WireVersion ‖ AD ‖ InitiatorSigningKeyBytes ‖ ResponderSigningKeyBytes ‖ messageRaw)
 ```
 
 The outer HMAC is defence in depth: it covers fields that GCM does not see (the ratchet
@@ -318,7 +417,7 @@ HMAC authenticates the complete wire frame and role membership.
 The outer HMAC input is:
 
 ```
-AD ‖ InitiatorSigningKeyBytes ‖ ResponderSigningKeyBytes ‖ messageRaw
+WireVersion ‖ AD ‖ InitiatorSigningKeyBytes ‖ ResponderSigningKeyBytes ‖ messageRaw
 ```
 
 `InitiatorSigningKeyBytes` is always Alice's signing key. `ResponderSigningKeyBytes` is
@@ -619,8 +718,8 @@ would require a separate header ratchet and is not implemented.
 **Formal machine-checked verification of the X3DH handshake.** The Double Ratchet
 implementation rests on the ACD19 composition theorem, which provides a formal proof
 framework. The X3DH handshake follows the structure of Hashimoto et al. (PKC 2022) and
-the security argument is sound, but the specific byte-level transcript protocol — the
-exact concatenation of `IK_A.ex || CT1 || CT2 || EK_A.pub [|| CT4]` — has not been
+the security argument is sound, but the specific byte-level transcript protocol (the
+v2 transcript `T` described under "What the transcript covers") has not been
 verified with a symbolic model checker such as ProVerif or CryptoVerif. Signal's PQXDH
 underwent exactly this treatment (Bhargavan et al., USENIX Security 2024), which found
 two issues that were then fixed. A comparable analysis of pqcratchet's handshake would
@@ -630,13 +729,15 @@ All HKDF operations use SHA-256. The info strings are:
 
 | Usage | Info string |
 |-------|-------------|
-| X3DH session key derivation | `pqcratchet/v1/KEMInit` |
+| X3DH root key and exporter secret (salt = transcript hash) | `pqcratchet/v2/KEMInit` |
+| Session exporter | `pqcratchet/v2/Exporter` |
 | KEM ratchet step KDF | `pqcratchet/v1/Ratchet` |
 | Per-message key derivation | `pqcratchet/v1/MessageKeys` |
 | Hybrid KEM secret combiner | `pqcratchet/v1/HybridKEM` |
 
 The hybrid KEM info string is used inside every `Encapsulate` and `Decapsulate` call.
-Interop implementations must use the same strings.
+The X3DH transcript begins with the label `pqcratchet/v2/X3DH` (a signed prefix, not an
+HKDF info string). Interop implementations must use the same strings.
 
 ---
 
