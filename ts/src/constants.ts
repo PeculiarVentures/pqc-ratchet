@@ -34,17 +34,33 @@ export const MAX_SKIP = 1000;
 export const MAX_RATCHET_STACK_SIZE = 20;
 export const MAX_OLD_EPOCH_SKIP = 50;
 
-// HKDF info labels — MUST match pqcratchet/v1/... strings in Go
-export const INFO_KEM_INIT = new TextEncoder().encode("pqcratchet/v1/KEMInit");
+// HKDF info labels. These MUST match the strings in Go doc.go.
+export const INFO_KEM_INIT = new TextEncoder().encode("pqcratchet/v2/KEMInit");
 export const INFO_RATCHET = new TextEncoder().encode("pqcratchet/v1/Ratchet");
 export const INFO_MESSAGE_KEYS = new TextEncoder().encode("pqcratchet/v1/MessageKeys");
 export const INFO_HYBRID_KEM = new TextEncoder().encode("pqcratchet/v1/HybridKEM");
+export const INFO_EXPORTER = new TextEncoder().encode("pqcratchet/v2/Exporter");
+
+// Prefix of the X3DH transcript the initiator signs.
+export const TRANSCRIPT_LABEL = new TextEncoder().encode("pqcratchet/v2/X3DH");
+
+/**
+ * Protocol identifier advertised by negotiation layers (for example the
+ * GoodKey ratchet negotiation spec). Bound into the signed X3DH transcript.
+ */
+export const PROTOCOL_ID = "pqc-ratchet-0";
+
+/** Upper bound on the application session context carried in a PreKeyMessage. */
+export const MAX_SESSION_CONTEXT_SIZE = 4096;
+
+/** Upper bound on one exporter request (255 × SHA-256 output). */
+export const MAX_EXPORTER_LENGTH = 255 * 32;
 
 // Chain KDF diversifiers
 export const CIPHER_KEY_KDF_INPUT = new Uint8Array([0x01]);
 export const ROOT_KEY_KDF_INPUT = new Uint8Array([0x02]);
 
-// Wire protocol version
+// Wire protocol version (WIRE_VERSION) lives in wire.ts.
 
 // Max ciphertext size (1 MiB)
 export const MAX_CIPHERTEXT_SIZE = 1024 * 1024;

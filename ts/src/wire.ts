@@ -12,7 +12,7 @@
  *   []byte ciphertext
  *
  * Signed message envelope:
- *   byte    wireVersion (0x01)
+ *   byte    wireVersion (0x02)
  *   [32]byte hmacSig
  *   uint32  innerLen
  *   []byte  inner
@@ -22,6 +22,8 @@
  *   uint32  registrationID
  *   uint32  signedPreKeyIndex
  *   uint32  oneTimePreKeyIndex  (0xFFFFFFFF = none)
+ *   uint32  sessionContextLen   (≤ MAX_SESSION_CONTEXT_SIZE)
+ *   []byte  sessionContext      (bound into initiatorSig)
  *   [1952]byte signingPub
  *   [3309]byte exchangeKeySig
  *   [1216]byte exchangePub
@@ -37,11 +39,16 @@
 
 import {
   HYBRID_PUBLIC_KEY_SIZE, HYBRID_CIPHERTEXT_SIZE,
-  DSA_PUBLIC_KEY_SIZE, DSA_SIGNATURE_SIZE,
+  DSA_PUBLIC_KEY_SIZE, DSA_SIGNATURE_SIZE, MAX_SESSION_CONTEXT_SIZE,
 } from "./constants.js";
 import { concat } from "./crypto.js";
 
-export const WIRE_VERSION = 0x01;
+/**
+ * Wire format version. 0x02 added the session context to the PreKeyMessage,
+ * the v2 X3DH transcript, the transcript hash in the session AD, and the
+ * version byte in the message HMAC input. 0x01 frames are rejected.
+ */
+export const WIRE_VERSION = 0x02;
 export const NO_ONE_TIME_PRE_KEY = 0xFFFFFFFF;
 
 // ─── uint32 helpers ──────────────────────────────────────────────────────────
@@ -90,6 +97,7 @@ export function unmarshalMessageProtocol(b: Uint8Array): MessageProtocol {
 
   if (b.length < off + 1) throw new Error("wire: message too short (hasRatchetCT)");
   const hasRatchetCT = b[off]; off += 1;
+  if (hasRatchetCT > 0x01) throw new Error(`wire: hasRatchetCT must be 0 or 1, got 0x${hasRatchetCT.toString(16)}`);
   let ratchetCT: Uint8Array | null = null;
   if (hasRatchetCT === 0x01) {
     if (b.length < off + HYBRID_CIPHERTEXT_SIZE) throw new Error("wire: message too short (ratchetCT)");
@@ -114,14 +122,14 @@ export interface SignedMessageEnvelope {
   message: MessageProtocol;
 }
 
-/** Build the HMAC input: AD || initiatorSigKey || responderSigKey || inner */
+/** Build the HMAC input: WIRE_VERSION || AD || initiatorSigKey || responderSigKey || inner */
 export function buildHMACInput(
   ad: Uint8Array,
   initiatorSigKey: Uint8Array,
   responderSigKey: Uint8Array,
   inner: Uint8Array,
 ): Uint8Array {
-  return concat(ad, initiatorSigKey, responderSigKey, inner);
+  return concat(new Uint8Array([WIRE_VERSION]), ad, initiatorSigKey, responderSigKey, inner);
 }
 
 export function marshalSignedMessage(
@@ -158,6 +166,7 @@ export interface PreKeyMessageWire {
   registrationID: number;
   signedPreKeyIndex: number;
   oneTimePreKeyIndex: number;  // NO_ONE_TIME_PRE_KEY if none
+  sessionContext: Uint8Array;  // ≤ MAX_SESSION_CONTEXT_SIZE, may be empty
   signingPub: Uint8Array;      // DSA_PUBLIC_KEY_SIZE
   exchangeKeySig: Uint8Array;  // DSA_SIGNATURE_SIZE
   exchangePub: Uint8Array;     // HYBRID_PUBLIC_KEY_SIZE
@@ -175,6 +184,8 @@ export function marshalPreKeyMessageWire(m: PreKeyMessageWire): Uint8Array {
     writeU32(m.registrationID),
     writeU32(m.signedPreKeyIndex),
     writeU32(m.oneTimePreKeyIndex),
+    writeU32(m.sessionContext.length),
+    m.sessionContext,
     m.signingPub,
     m.exchangeKeySig,
     m.exchangePub,
@@ -202,9 +213,16 @@ export function unmarshalPreKeyMessageWire(b: Uint8Array): PreKeyMessageWire {
   if (b[off] !== WIRE_VERSION) throw new Error(`wire: unsupported version 0x${b[off].toString(16)}`);
   off += 1;
 
+  if (b.length < off + 16) throw new Error("wire: preKeyMsg too short (header)");
   const registrationID = readU32(b, off); off += 4;
   const signedPreKeyIndex = readU32(b, off); off += 4;
   const oneTimePreKeyIndex = readU32(b, off); off += 4;
+  const ctxLen = readU32(b, off); off += 4;
+  if (ctxLen > MAX_SESSION_CONTEXT_SIZE) {
+    throw new Error(`pqcratchet: session context exceeds MAX_SESSION_CONTEXT_SIZE (${ctxLen} bytes)`);
+  }
+  if (b.length < off + ctxLen) throw new Error("wire: preKeyMsg too short (sessionContext)");
+  const sessionContext = b.slice(off, off + ctxLen); off += ctxLen;
 
   const signingPub = b.slice(off, off + DSA_PUBLIC_KEY_SIZE); off += DSA_PUBLIC_KEY_SIZE;
   const exchangeKeySig = b.slice(off, off + DSA_SIGNATURE_SIZE); off += DSA_SIGNATURE_SIZE;
@@ -215,6 +233,7 @@ export function unmarshalPreKeyMessageWire(b: Uint8Array): PreKeyMessageWire {
 
   if (b.length < off + 1) throw new Error("wire: preKeyMsg too short (hasCT4)");
   const hasCT4 = b[off]; off += 1;
+  if (hasCT4 > 0x01) throw new Error(`wire: hasCT4 must be 0 or 1, got 0x${hasCT4.toString(16)}`);
   let ct4: Uint8Array | null = null;
   if (hasCT4 === 0x01) {
     ct4 = b.slice(off, off + HYBRID_CIPHERTEXT_SIZE); off += HYBRID_CIPHERTEXT_SIZE;
@@ -230,7 +249,7 @@ export function unmarshalPreKeyMessageWire(b: Uint8Array): PreKeyMessageWire {
   if (off !== b.length) throw new Error(`wire: ${b.length - off} unexpected trailing bytes`);
 
   return {
-    registrationID, signedPreKeyIndex, oneTimePreKeyIndex,
+    registrationID, signedPreKeyIndex, oneTimePreKeyIndex, sessionContext,
     signingPub, exchangeKeySig, exchangePub, baseKey,
     ct1, ct2, ct4, initiatorSig, signedMessageBytes,
   };

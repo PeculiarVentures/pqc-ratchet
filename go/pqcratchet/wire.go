@@ -8,13 +8,16 @@ package pqcratchet
 // written raw.
 //
 // All message types begin with a 1-byte version field. The current version is
-// WireVersion (0x01). Parsers must reject messages with unknown versions.
+// WireVersion (0x02). Parsers must reject messages with unknown versions.
+// Version 0x02 added the session context to the PreKeyMessage, the v2 X3DH
+// transcript, the transcript hash in the session AD, and the version byte in
+// the message HMAC input. Version 0x01 is not accepted.
 //
 // # Message types
 //
 // PreKeyBundle (server → client on connection):
 //
-//	[1]                   Version (0x01)
+//	[1]                   Version (0x02)
 //	[4]                   RegistrationID
 //	[4]                   SignedPreKeyIndex
 //	[DSAPublicKeySize]    SigningPubKey
@@ -28,10 +31,12 @@ package pqcratchet
 //
 // PreKeyMessage (initiator → responder):
 //
-//	[1]                    Version (0x01)
+//	[1]                    Version (0x02)
 //	[4]                    RegistrationID
 //	[4]                    SignedPreKeyIndex
 //	[4]                    OneTimePreKeyIndex (-1 as 0xFFFFFFFF if none)
+//	[4]                    SessionContextLen (≤ MaxSessionContextSize)
+//	[...]                  SessionContext    (bound into InitiatorSig)
 //	[DSAPublicKeySize]     SigningPubKey
 //	[DSASignatureSize]     ExchangeKeySig
 //	[HybridPublicKeySize]  ExchangePubKey
@@ -63,7 +68,7 @@ package pqcratchet
 //
 // MessageSignedProtocol (outer envelope):
 //
-//	[1]   Version (0x01)
+//	[1]   Version (0x02)
 //	[32]  Signature  (HMAC-SHA-256, 32 bytes)
 //	[4]   MessageLen
 //	[...] MessageBytes (serialised MessageProtocol)
@@ -72,11 +77,12 @@ package pqcratchet
 //
 // The 32-byte Signature in MessageSignedProtocol is:
 //
-//	HMAC-SHA-256(messageKey, AD || initiatorSigKey || responderSigKey || MessageBytes)
+//	HMAC-SHA-256(messageKey, Version || AD || initiatorSigKey || responderSigKey || MessageBytes)
 //
 // where:
-//   - AD = Encode(IK_A.ex) || Encode(IK_B.ex)  — X3DH associated data per spec §3.3,
-//     binding the MAC to the specific session identity keys
+//   - Version is the envelope version byte, so it cannot be altered in transit
+//   - AD = Encode(IK_A.ex) || Encode(IK_B.ex) || TranscriptHash, binding the
+//     MAC to the session identity keys and to this handshake
 //   - initiatorSigKey = Alice's ML-DSA-65 signing public key bytes
 //   - responderSigKey = Bob's ML-DSA-65 signing public key bytes
 //
@@ -87,7 +93,9 @@ package pqcratchet
 //
 // All HKDF operations use SHA-256. The info strings are (for interop reference):
 //
-//	Session key derivation:  "pqcratchet/v1/KEMInit"
+//	Session key derivation:  "pqcratchet/v2/KEMInit"   (salt = transcript hash)
+//	Exporter:                "pqcratchet/v2/Exporter"
+//	X3DH transcript label:   "pqcratchet/v2/X3DH"
 //	Ratchet step KDF:        "pqcratchet/v1/Ratchet"
 //	Message key derivation:  "pqcratchet/v1/MessageKeys"
 //	Hybrid KEM combiner:     "pqcratchet/v1/HybridKEM"  ← used inside every Encap/Decap
@@ -100,7 +108,7 @@ import (
 
 // WireVersion is the current protocol wire format version.
 // Increment on any breaking wire format change.
-const WireVersion = byte(0x01)
+const WireVersion = byte(0x02)
 
 // maxCiphertextSize is the maximum allowed GCM output length (plaintext + 16-byte tag)
 // in a message. Prevents OOM allocation from untrusted length fields. The effective
@@ -200,6 +208,9 @@ func UnmarshalBundleWire(r io.Reader) (*BundleWire, error) {
 	if err = readFull(r, flag); err != nil {
 		return nil, fmt.Errorf("bundle: hasOneTimePreKey: %w", err)
 	}
+	if flag[0] > 0x01 {
+		return nil, fmt.Errorf("bundle: hasOneTimePreKey must be 0 or 1, got 0x%02x", flag[0])
+	}
 	if flag[0] == 0x01 {
 		b.HasOneTimePreKey = true
 		if err = readFull(r, b.OneTimePreKeyPub[:]); err != nil {
@@ -284,6 +295,9 @@ type PreKeyMessageWire struct {
 	RegistrationID     uint32
 	SignedPreKeyIndex  uint32
 	OneTimePreKeyIndex uint32 // 0xFFFFFFFF means none
+	// SessionContext is the application context bound into InitiatorSig.
+	// At most MaxSessionContextSize bytes; nil or empty if unused.
+	SessionContext     []byte
 	SigningPub         [DSAPublicKeySize]byte
 	ExchangeKeySig     [DSASignatureSize]byte
 	ExchangePub        [HybridPublicKeySize]byte
@@ -311,6 +325,8 @@ func MarshalPreKeyMessageWire(m *PreKeyMessageWire) []byte {
 	buf = appendUint32(buf, m.RegistrationID)
 	buf = appendUint32(buf, m.SignedPreKeyIndex)
 	buf = appendUint32(buf, m.OneTimePreKeyIndex)
+	buf = appendUint32(buf, uint32(len(m.SessionContext)))
+	buf = append(buf, m.SessionContext...)
 	buf = append(buf, m.SigningPub[:]...)
 	buf = append(buf, m.ExchangeKeySig[:]...)
 	buf = append(buf, m.ExchangePub[:]...)
@@ -349,6 +365,19 @@ func UnmarshalPreKeyMessageWire(r io.Reader) (*PreKeyMessageWire, error) {
 	if m.OneTimePreKeyIndex, err = readUint32(r); err != nil {
 		return nil, fmt.Errorf("preKeyMsg: oneTimePreKeyIndex: %w", err)
 	}
+	ctxLen, err := readUint32(r)
+	if err != nil {
+		return nil, fmt.Errorf("preKeyMsg: sessionContextLen: %w", err)
+	}
+	if ctxLen > MaxSessionContextSize {
+		return nil, fmt.Errorf("preKeyMsg: %w (%d bytes)", ErrSessionContextTooLarge, ctxLen)
+	}
+	if ctxLen > 0 {
+		m.SessionContext = make([]byte, ctxLen)
+		if err = readFull(r, m.SessionContext); err != nil {
+			return nil, fmt.Errorf("preKeyMsg: sessionContext: %w", err)
+		}
+	}
 	if err = readFull(r, m.SigningPub[:]); err != nil {
 		return nil, fmt.Errorf("preKeyMsg: signingPub: %w", err)
 	}
@@ -370,6 +399,9 @@ func UnmarshalPreKeyMessageWire(r io.Reader) (*PreKeyMessageWire, error) {
 	flag := make([]byte, 1)
 	if err = readFull(r, flag); err != nil {
 		return nil, fmt.Errorf("preKeyMsg: hasCT4: %w", err)
+	}
+	if flag[0] > 0x01 {
+		return nil, fmt.Errorf("preKeyMsg: hasCT4 must be 0 or 1, got 0x%02x", flag[0])
 	}
 	if flag[0] == 0x01 {
 		m.HasCT4 = true
@@ -429,6 +461,7 @@ func ParsePreKeyMessageWire(m *PreKeyMessageWire) (*PreKeyMessage, error) {
 		BaseKey:                 &baseKey,
 		CT1:                     &ct1,
 		CT2:                     &ct2,
+		SessionContext:          cloneBytes(m.SessionContext),
 		InitiatorSig:            m.InitiatorSig[:],
 	}
 	if m.OneTimePreKeyIndex != noOneTimePreKey {
@@ -484,6 +517,9 @@ func UnmarshalMessageProtocol(b []byte) (*ParsedMessageProtocol, error) {
 	if err = readFull(r, flag); err != nil {
 		return nil, fmt.Errorf("msg: hasRatchetCT: %w", err)
 	}
+	if flag[0] > 0x01 {
+		return nil, fmt.Errorf("msg: hasRatchetCT must be 0 or 1, got 0x%02x", flag[0])
+	}
 	if flag[0] == 0x01 {
 		var ratchetCT HybridKEMCiphertext
 		if err = readFull(r, ratchetCT[:]); err != nil {
@@ -512,25 +548,19 @@ func UnmarshalMessageProtocol(b []byte) (*ParsedMessageProtocol, error) {
 
 // MarshalSignedMessage serialises a signed message envelope.
 //
-// Signed data layout: AD || initiatorSigKey || responderSigKey || inner
+// Signed data layout: WireVersion || AD || initiatorSigKey || responderSigKey || inner
 //
 // Initiator and responder keys are stable session roles (Alice always initiator,
 // Bob always responder), so both sides compute the same byte string regardless
 // of who is currently sending. This avoids a Local/Remote perspective inversion
 // where sender and receiver would disagree on field order.
 //
-// AD is the X3DH Associated Data (Encode(IKA) || Encode(IKB)), binding the MAC
-// to the specific session identity keys per X3DH spec §3.3.
+// AD is the session Associated Data (Encode(IKA) || Encode(IKB) || TranscriptHash).
 //
-// Signature is 32 bytes (HMAC-SHA-256). The version byte is prepended for
-// future protocol negotiation.
+// Signature is 32 bytes (HMAC-SHA-256). The envelope version byte is both
+// written in the clear and covered by the HMAC.
 func MarshalSignedMessage(inner []byte, hmacKey, ad, initiatorSigKey, responderSigKey []byte) []byte {
-	signedData := make([]byte, 0, len(ad)+len(initiatorSigKey)+len(responderSigKey)+len(inner))
-	signedData = append(signedData, ad...)
-	signedData = append(signedData, initiatorSigKey...)
-	signedData = append(signedData, responderSigKey...)
-	signedData = append(signedData, inner...)
-	sig := hmacSHA256(hmacKey, signedData)
+	sig := hmacSHA256(hmacKey, buildHMACInput(ad, initiatorSigKey, responderSigKey, inner))
 
 	var buf []byte
 	buf = append(buf, WireVersion)
@@ -579,6 +609,17 @@ func UnmarshalSignedMessage(b []byte) (*ParsedMessageSigned, error) {
 		Message:    msg,
 		MessageRaw: rawCopy,
 	}, nil
+}
+
+// buildHMACInput returns WireVersion || AD || initiatorSigKey || responderSigKey || inner.
+func buildHMACInput(ad, initiatorSigKey, responderSigKey, inner []byte) []byte {
+	d := make([]byte, 0, 1+len(ad)+len(initiatorSigKey)+len(responderSigKey)+len(inner))
+	d = append(d, WireVersion)
+	d = append(d, ad...)
+	d = append(d, initiatorSigKey...)
+	d = append(d, responderSigKey...)
+	d = append(d, inner...)
+	return d
 }
 
 // ─── Binary helpers ───────────────────────────────────────────────────────────

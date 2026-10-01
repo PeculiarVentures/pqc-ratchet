@@ -7,7 +7,7 @@
  */
 
 import {
-  INFO_RATCHET, MAX_SKIP, MAX_OLD_EPOCH_SKIP, MAX_RATCHET_STACK_SIZE,
+  INFO_RATCHET, INFO_EXPORTER, MAX_EXPORTER_LENGTH, MAX_SKIP, MAX_OLD_EPOCH_SKIP, MAX_RATCHET_STACK_SIZE,
   HYBRID_PUBLIC_KEY_SIZE, HYBRID_CIPHERTEXT_SIZE,
   AES_GCM_TAG_SIZE,
 } from "./constants.js";
@@ -24,6 +24,7 @@ export const ERR_DUPLICATE_MESSAGE = "pqcratchet: duplicate message counter";
 export const ERR_COUNTER_TOO_LARGE = "pqcratchet: message counter exceeds max skip";
 export const ERR_HMAC_VERIFY_FAILED = "pqcratchet: HMAC verification failed";
 export const ERR_SKIPPED_KEY_CAPACITY = "pqcratchet: skipped key cache full";
+export const ERR_EXPORTER_LENGTH = "pqcratchet: exporter length must be between 1 and 8160 bytes";
 
 // ─── Session ──────────────────────────────────────────────────────────────────
 
@@ -53,12 +54,21 @@ export class Session {
   currentStep: KEMRatchetStep | null = null;
   skippedKeys: Map<string, Uint8Array> = new Map();
 
-  // Session AD = Encode(IK_A.ex) || Encode(IK_B.ex)
+  // Session AD = Encode(IK_A.ex) || Encode(IK_B.ex) || transcriptHash
   ad: Uint8Array;
 
   // Stable role signing keys for HMAC (initiator always first, responder second)
   initiatorSigningKeyBytes: Uint8Array;
   responderSigningKeyBytes: Uint8Array;
+
+  /** SHA-256 of the signed X3DH transcript. Same on both peers; not secret. */
+  readonly transcriptHash: Uint8Array;
+
+  /** Application context bound into the handshake. The responder must check it. */
+  readonly sessionContext: Uint8Array;
+
+  // Backs exportKeyingMaterial(); fixed for the life of the session.
+  #exporterSecret: Uint8Array;
 
   constructor(
     rootKey: Uint8Array,
@@ -66,12 +76,44 @@ export class Session {
     ad: Uint8Array,
     initiatorSigningKeyBytes: Uint8Array,
     responderSigningKeyBytes: Uint8Array,
+    transcriptHash: Uint8Array,
+    sessionContext: Uint8Array,
+    exporterSecret: Uint8Array,
   ) {
     this.rootKey = rootKey;
     this.ratchetKP = ratchetKP;
     this.ad = ad;
     this.initiatorSigningKeyBytes = initiatorSigningKeyBytes;
     this.responderSigningKeyBytes = responderSigningKeyBytes;
+    this.transcriptHash = transcriptHash;
+    this.sessionContext = sessionContext;
+    this.#exporterSecret = exporterSecret;
+  }
+
+  // ─── Exporter ──────────────────────────────────────────────────────────────
+
+  /**
+   * Derive `length` bytes bound to this session, in the manner of the TLS
+   * exporter. Both peers get the same output for the same label and context.
+   * Matches Go's Session.ExportKeyingMaterial:
+   *
+   *   info = "pqcratchet/v2/Exporter" || u32 len(label) || label || u32 len(context) || context
+   *   out  = HKDF-Expand(PRK=exporterSecret, info, length)
+   *
+   * The exporter secret does not ratchet, so the output is stable for the
+   * life of the session. length must be between 1 and 8160.
+   */
+  async exportKeyingMaterial(label: string, context: Uint8Array, length: number): Promise<Uint8Array> {
+    if (!Number.isInteger(length) || length < 1 || length > MAX_EXPORTER_LENGTH) {
+      throw new Error(ERR_EXPORTER_LENGTH);
+    }
+    const labelBytes = new TextEncoder().encode(label);
+    const info = concat(
+      INFO_EXPORTER,
+      writeUint32BE(labelBytes.length), labelBytes,
+      writeUint32BE(context.length), context,
+    );
+    return hkdfExpand(this.#exporterSecret, info, length);
   }
 
   // ─── Encrypt ───────────────────────────────────────────────────────────────
@@ -258,7 +300,7 @@ export class Session {
     const keys = await deriveMessageKeys(cipherKey);
 
     // Verify outer HMAC first
-    const hmacInput = concat(this.ad, this.initiatorSigningKeyBytes, this.responderSigningKeyBytes, messageRaw);
+    const hmacInput = buildHMACInput(this.ad, this.initiatorSigningKeyBytes, this.responderSigningKeyBytes, messageRaw);
     const expectedHMAC = await hmacSHA256(keys.hmacKey, hmacInput);
     if (!constantTimeEqual(hmacSignature, expectedHMAC)) {
       throw new Error(ERR_HMAC_VERIFY_FAILED);

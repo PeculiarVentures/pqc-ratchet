@@ -57,14 +57,26 @@ type Session struct {
 	// The private key stays local; only the ciphertext is transmitted.
 	RatchetKP *HybridKEMKeyPair
 
-	// AD is the Associated Data for this session, per X3DH spec §3.3:
-	//   AD = Encode(IKA) || Encode(IKB)
+	// AD is the Associated Data for this session:
+	//   AD = Encode(IKA) || Encode(IKB) || TranscriptHash
 	// where IKA and IKB are the initiator's and responder's identity
-	// exchange public keys respectively.
-	// AD is included in every message HMAC to bind message authentication
-	// to the specific session identity keys. This prevents a message
-	// authenticated in one session from being replayed into another.
+	// exchange public keys. X3DH spec §3.3 requires at least the two
+	// identity keys; the transcript hash additionally ties every message to
+	// this particular handshake, including its session context and protocol
+	// version. AD is the GCM additional data and is part of every outer HMAC.
 	AD []byte
+
+	// TranscriptHash is SHA-256 of the signed X3DH transcript. Both peers
+	// hold the same value. It is public and can serve as a session identifier.
+	TranscriptHash []byte
+
+	// SessionContext is the application context both peers bound into the
+	// handshake. The responder must check it against what it expects.
+	SessionContext []byte
+
+	// exporterSecret backs ExportKeyingMaterial. It is fixed for the life of
+	// the session and does not ratchet.
+	exporterSecret []byte
 
 	// Signing key bytes for HMAC authentication.
 	// These use stable session roles (initiator/responder) rather than the
@@ -110,6 +122,9 @@ type PreKeyMessage struct {
 	// KEM ciphertexts from Alice's X3DH computation.
 	CT1, CT2 *HybridKEMCiphertext
 	CT4      *HybridKEMCiphertext // nil if no OPK
+	// SessionContext is the application context the initiator signed.
+	// Authenticated by InitiatorSig; the responder must still check it.
+	SessionContext []byte
 	// InitiatorSig is Alice's ML-DSA-65 signature over the X3DH transcript.
 	// Verified by AuthenticateB before any decapsulation.
 	InitiatorSig []byte
@@ -119,41 +134,59 @@ type PreKeyMessage struct {
 
 // ─── Session creation ─────────────────────────────────────────────────────────
 
-// CreateSessionInitiator builds a session from a verified PreKeyBundle.
-// This is Alice's side.
+// CreateSessionInitiator builds a session from a verified PreKeyBundle with
+// an empty session context. This is Alice's side.
+//
+// Deployments that route sessions through an intermediary should use
+// CreateSessionInitiatorWithContext so the session id and origin are bound
+// into the handshake.
 func CreateSessionInitiator(identity *Identity, bundle *PreKeyBundle) (*Session, *KEMInitiatorResult, error) {
-	return createSessionInitiator(identity, bundle, rand.Reader)
+	return createSessionInitiator(identity, bundle, nil, rand.Reader)
 }
 
-// buildAD constructs the X3DH Associated Data per spec §3.3:
+// CreateSessionInitiatorWithContext builds a session from a verified
+// PreKeyBundle and binds sessionContext into the signed X3DH transcript and
+// every derived key. The context travels to the responder in the
+// PreKeyMessage (see ToPreKeyMessageWire). It must be at most
+// MaxSessionContextSize bytes.
+func CreateSessionInitiatorWithContext(identity *Identity, bundle *PreKeyBundle, sessionContext []byte) (*Session, *KEMInitiatorResult, error) {
+	return createSessionInitiator(identity, bundle, sessionContext, rand.Reader)
+}
+
+// buildAD constructs the session Associated Data:
 //
-//	AD = Encode(IKA) || Encode(IKB)
+//	AD = Encode(IKA) || Encode(IKB) || TranscriptHash
 //
 // IKA is the initiator's identity exchange public key; IKB is the responder's.
-// These are the KEM exchange keys, not the signing keys. AD is stable for the
-// lifetime of the session and is used as GCM additional data and mixed into
-// every outer HMAC.
+// These are the KEM exchange keys, not the signing keys. The transcript hash
+// binds the AD to this handshake. AD is stable for the lifetime of the
+// session and is used as GCM additional data and mixed into every outer HMAC.
 //
 // Ordering constraint: the initiator (Alice) key MUST be passed first. Both
 // parameters have the same type, so a transposition compiles silently but
 // produces a different AD than the peer, causing every GCM Open and every
 // outer HMAC verification to fail. If adding a new session creation path,
 // verify against the existing call sites that Alice's key is argument 1.
-func buildAD(initiatorExchangePub, responderExchangePub *HybridKEMPublicKey) []byte {
-	ad := make([]byte, HybridPublicKeySize*2)
-	copy(ad[:HybridPublicKeySize], initiatorExchangePub[:])
-	copy(ad[HybridPublicKeySize:], responderExchangePub[:])
+func buildAD(initiatorExchangePub, responderExchangePub *HybridKEMPublicKey, transcriptHash []byte) []byte {
+	ad := make([]byte, 0, HybridPublicKeySize*2+len(transcriptHash))
+	ad = append(ad, initiatorExchangePub[:]...)
+	ad = append(ad, responderExchangePub[:]...)
+	ad = append(ad, transcriptHash...)
 	return ad
 }
 
-func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, r io.Reader) (*Session, *KEMInitiatorResult, error) {
+func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, sessionContext []byte, r io.Reader) (*Session, *KEMInitiatorResult, error) {
 	result, err := authenticateA(
 		r,
 		identity.SigningKey.Private,
 		&identity.ExchangeKey.Public,
-		bundle.IdentityExchangePub,
-		bundle.SignedPreKeyPub,
-		bundle.OneTimePreKeyPub,
+		&ResponderKeys{
+			SigningPubBytes:  DSAPublicKeyBytes(bundle.IdentitySigningPub),
+			ExchangePub:      bundle.IdentityExchangePub,
+			SignedPreKeyPub:  bundle.SignedPreKeyPub,
+			OneTimePreKeyPub: bundle.OneTimePreKeyPub,
+		},
+		sessionContext,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("x3dh initiator: %w", err)
@@ -163,8 +196,8 @@ func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, r io.Reade
 	initiatorSigningPubBytes := DSAPublicKeyBytes(identity.SigningKey.Public)
 	responderSigningPubBytes := DSAPublicKeyBytes(bundle.IdentitySigningPub)
 
-	// AD = Encode(IKA) || Encode(IKB): initiator exchange key first, per spec §3.3.
-	ad := buildAD(&identity.ExchangeKey.Public, bundle.IdentityExchangePub)
+	// AD = Encode(IKA) || Encode(IKB) || th: initiator exchange key first.
+	ad := buildAD(&identity.ExchangeKey.Public, bundle.IdentityExchangePub, result.TranscriptHash)
 
 	sess := &Session{
 		Identity: identity,
@@ -174,7 +207,7 @@ func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, r io.Reade
 			ExchangeKeyBytes: bundle.IdentityExchangePub[:],
 			Thumbprint:       Thumbprint(responderSigningPubBytes),
 		},
-		RootKey: result.RootKey,
+		RootKey: cloneBytes(result.RootKey),
 		// Alice's ephemeral keypair is also the initial ratchet keypair.
 		// Per X3DH spec §3.3, the ephemeral private key must be deleted after
 		// SK is computed. Here it is retained only as RatchetKP for the first
@@ -187,11 +220,20 @@ func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, r io.Reade
 			RemoteRatchetKey: bundle.SignedPreKeyPub,
 		},
 		AD:                       ad,
+		TranscriptHash:           cloneBytes(result.TranscriptHash),
+		SessionContext:           cloneBytes(result.SessionContext),
+		exporterSecret:           cloneBytes(result.exporterSecret),
 		InitiatorSigningKeyBytes: initiatorSigningPubBytes,
 		ResponderSigningKeyBytes: responderSigningPubBytes,
 		SkippedKeys:              make(map[string]*skippedKeyEntry),
 		SkippedKeyTTL:            DefaultSkippedKeyTTL,
 	}
+
+	// The session holds its own copy; clear the one in the result.
+	for i := range result.exporterSecret {
+		result.exporterSecret[i] = 0
+	}
+	result.exporterSecret = nil
 
 	return sess, result, nil
 }
@@ -199,6 +241,12 @@ func createSessionInitiator(identity *Identity, bundle *PreKeyBundle, r io.Reade
 // CreateSessionResponder builds a session from a verified PreKeyMessage.
 // This is Bob's side. Returns ErrInvalidSignature if Alice's X3DH transcript
 // signature does not verify — the session must not be used in that case.
+//
+// The session context carried in msg has been authenticated by the
+// initiator's signature, which proves only that the initiator asserted it.
+// Callers MUST compare Session.SessionContext with the context they expect
+// (for example the rendezvous session id they joined) before acting on the
+// session.
 //
 // Replay warning: If no one-time pre-key was used, Alice's PreKeyMessage can be
 // replayed to Bob and he will accept it, deriving the same root key each time.
@@ -211,49 +259,82 @@ func CreateSessionResponder(identity *Identity, msg *PreKeyMessage) (*Session, e
 		return nil, fmt.Errorf("signed pre-key %d not found", msg.SignedPreKeyIndex)
 	}
 
-	// Reserve the one-time pre-key under identity.mu to prevent concurrent
-	// CreateSessionResponder calls from observing the same OPK as non-nil
-	// and reusing it (TOCTOU / double-use). The slot is set to nil while
-	// holding the lock; on AuthenticateB failure it is restored (also under
-	// the lock) so unauthenticated or malformed requests do not permanently
-	// consume a key.
-	var oneTimePreKeyPriv *HybridKEMPrivateKey
-	var oneTimePreKeyKP *HybridKEMKeyPair // held for zeroing after use
-	var oneTimePreKeyIndex int = -1
+	signedPreKP := identity.SignedPreKeys[msg.SignedPreKeyIndex]
+
+	// Look up the one-time pre-key without reserving it. The signature check
+	// below needs its public key, and a PreKeyMessage that fails that check
+	// must not touch the slot at all.
+	//
+	// The public key is copied while holding the lock. A concurrent call that
+	// wins the reservation zeroes the key pair only after it has cleared the
+	// slot, so a copy taken under the lock never races with that zeroing.
+	var oneTimePreKeyKP *HybridKEMKeyPair
+	var opkPub *HybridKEMPublicKey
+	oneTimePreKeyIndex := -1
 	identity.mu.Lock()
 	if msg.OneTimePreKeyIndex >= 0 && msg.OneTimePreKeyIndex < len(identity.PreKeys) {
-		kp := identity.PreKeys[msg.OneTimePreKeyIndex]
-		if kp != nil {
-			oneTimePreKeyPriv = &kp.Private
+		if kp := identity.PreKeys[msg.OneTimePreKeyIndex]; kp != nil {
 			oneTimePreKeyKP = kp
 			oneTimePreKeyIndex = msg.OneTimePreKeyIndex
-			identity.PreKeys[msg.OneTimePreKeyIndex] = nil
+			opkPub = new(HybridKEMPublicKey)
+			copy(opkPub[:], kp.Public[:])
 		}
 	}
 	identity.mu.Unlock()
 
-	signedPreKP := identity.SignedPreKeys[msg.SignedPreKeyIndex]
+	var ownExchangePub, ownSignedPreKeyPub HybridKEMPublicKey
+	copy(ownExchangePub[:], identity.ExchangeKey.Public[:])
+	copy(ownSignedPreKeyPub[:], signedPreKP.Public[:])
+	responder := &ResponderKeys{
+		SigningPubBytes:  DSAPublicKeyBytes(identity.SigningKey.Public),
+		ExchangePub:      &ownExchangePub,
+		SignedPreKeyPub:  &ownSignedPreKeyPub,
+		OneTimePreKeyPub: opkPub,
+	}
 
-	rootKey, err := AuthenticateB(
-		&identity.ExchangeKey.Private,
-		&signedPreKP.Private,
-		oneTimePreKeyPriv,
+	// Step 1: verify Alice's signature over the transcript. The transcript
+	// covers Bob's identity key, signed pre-key and one-time pre-key, so a
+	// message built for another responder, or with a rewritten pre-key index,
+	// is rejected here, before any decapsulation and before the OPK is used.
+	th, err := verifyInitiatorTranscript(
+		responder,
 		msg.IdentitySigningPub,
 		msg.IdentityExchangePub,
 		msg.BaseKey,
-		msg.CT1, msg.CT2,
-		msg.CT4,
+		msg.CT1, msg.CT2, msg.CT4,
+		msg.SessionContext,
 		msg.InitiatorSig,
 	)
 	if err != nil {
-		// Authentication failed — restore the OPK slot so the key is not
-		// permanently consumed by an unauthenticated or malformed request.
-		// The private key bytes have not been zeroed yet so restoration is safe.
-		if oneTimePreKeyIndex >= 0 {
+		return nil, fmt.Errorf("x3dh responder: %w", err)
+	}
+
+	// Step 2: reserve the one-time pre-key under identity.mu so concurrent
+	// CreateSessionResponder calls cannot both use it. If another call took it
+	// between the lookup and here, fail rather than use a key twice.
+	if oneTimePreKeyKP != nil {
+		identity.mu.Lock()
+		if identity.PreKeys[oneTimePreKeyIndex] != oneTimePreKeyKP {
+			identity.mu.Unlock()
+			return nil, fmt.Errorf("x3dh responder: one-time pre-key %d already used", oneTimePreKeyIndex)
+		}
+		identity.PreKeys[oneTimePreKeyIndex] = nil
+		identity.mu.Unlock()
+	}
+
+	var oneTimePreKeyPriv *HybridKEMPrivateKey
+	if oneTimePreKeyKP != nil {
+		oneTimePreKeyPriv = &oneTimePreKeyKP.Private
+	}
+
+	// Step 3: decapsulate and derive.
+	x3dh, err := deriveResponderKeys(th, &identity.ExchangeKey.Private, &signedPreKP.Private, oneTimePreKeyPriv, msg.CT1, msg.CT2, msg.CT4)
+	if err != nil {
+		// Restore the OPK slot so a malformed request that got past the
+		// signature check does not permanently consume the key. The private
+		// key bytes have not been zeroed yet, so restoration is safe.
+		if oneTimePreKeyKP != nil {
 			identity.mu.Lock()
-			// Only restore if the slot is still nil; a concurrent legitimate
-			// session may have already consumed another OPK at this index
-			// (shouldn't happen given monotonic index assignment, but be safe).
 			if identity.PreKeys[oneTimePreKeyIndex] == nil {
 				identity.PreKeys[oneTimePreKeyIndex] = oneTimePreKeyKP
 			}
@@ -261,9 +342,9 @@ func CreateSessionResponder(identity *Identity, msg *PreKeyMessage) (*Session, e
 		}
 		return nil, fmt.Errorf("x3dh responder: %w", err)
 	}
-	// Zero the OPK private key NOW — after AuthenticateB has finished using it
-	// and only on success. Per X3DH spec §3.4: "Bob deletes any one-time prekey
-	// private key that was used."
+	// Zero the OPK private key NOW, after it has been used and only on
+	// success. Per X3DH spec §3.4: "Bob deletes any one-time prekey private
+	// key that was used."
 	if oneTimePreKeyKP != nil {
 		ZeroKEMKeyPair(oneTimePreKeyKP)
 	}
@@ -272,11 +353,9 @@ func CreateSessionResponder(identity *Identity, msg *PreKeyMessage) (*Session, e
 	initiatorSigningPubBytes := DSAPublicKeyBytes(msg.IdentitySigningPub)
 	responderSigningPubBytes := DSAPublicKeyBytes(identity.SigningKey.Public)
 
-	// AD = Encode(IKA) || Encode(IKB): initiator (Alice) exchange key first.
+	// AD = Encode(IKA) || Encode(IKB) || th: initiator (Alice) exchange key first.
 	// msg.IdentityExchangePub is Alice's IKA; identity.ExchangeKey.Public is Bob's IKB.
-	var responderExchangePub HybridKEMPublicKey
-	copy(responderExchangePub[:], identity.ExchangeKey.Public[:])
-	ad := buildAD(msg.IdentityExchangePub, &responderExchangePub)
+	ad := buildAD(msg.IdentityExchangePub, &ownExchangePub, x3dh.TranscriptHash)
 
 	sess := &Session{
 		Identity: identity,
@@ -286,7 +365,7 @@ func CreateSessionResponder(identity *Identity, msg *PreKeyMessage) (*Session, e
 			ExchangeKeyBytes: msg.IdentityExchangePub[:],
 			Thumbprint:       Thumbprint(initiatorSigningPubBytes),
 		},
-		RootKey: rootKey,
+		RootKey: x3dh.RootKey,
 		// Bob's initial ratchet KP is the signed pre-key he already holds.
 		RatchetKP: signedPreKP,
 		CurrentStep: &KEMRatchetStep{
@@ -294,6 +373,9 @@ func CreateSessionResponder(identity *Identity, msg *PreKeyMessage) (*Session, e
 			RemoteRatchetKey: msg.BaseKey,
 		},
 		AD:                       ad,
+		TranscriptHash:           x3dh.TranscriptHash,
+		SessionContext:           cloneBytes(msg.SessionContext),
+		exporterSecret:           x3dh.exporterSecret,
 		InitiatorSigningKeyBytes: initiatorSigningPubBytes,
 		ResponderSigningKeyBytes: responderSigningPubBytes,
 		SkippedKeys:              make(map[string]*skippedKeyEntry),
@@ -477,6 +559,43 @@ func (s *Session) Open(wireBytes []byte) ([]byte, error) {
 	return s.DecryptSignedMessage(msg)
 }
 
+// ExportKeyingMaterial derives length bytes of keying material bound to this
+// session, in the manner of the TLS exporter (RFC 5705 / RFC 8446 §7.5).
+// Both peers obtain the same output for the same label and context.
+//
+//	info = "pqcratchet/v2/Exporter" || u32 len(label) || label || u32 len(context) || context
+//	out  = HKDF-Expand(PRK=ExporterSecret, info, length)
+//
+// The exporter secret is derived once at X3DH and does not ratchet, so the
+// output is stable for the life of the session. Use distinct labels for
+// distinct purposes. Typical uses are a channel binding value that an
+// approver device signs together with the operation it approves, or a key
+// for an out-of-band confirmation.
+//
+// length must be between 1 and 8160 (255 × 32) bytes.
+func (s *Session) ExportKeyingMaterial(label string, context []byte, length int) ([]byte, error) {
+	if length < 1 || length > 255*sha256.Size {
+		return nil, ErrExporterLength
+	}
+	s.mu.Lock()
+	secret := s.exporterSecret
+	s.mu.Unlock()
+	if len(secret) != 32 {
+		return nil, fmt.Errorf("pqcratchet: session has no exporter secret")
+	}
+	info := make([]byte, 0, len(infoExporter)+8+len(label)+len(context))
+	info = append(info, infoExporter...)
+	info = appendUint32(info, uint32(len(label)))
+	info = append(info, label...)
+	info = appendUint32(info, uint32(len(context)))
+	info = append(info, context...)
+	out := make([]byte, length)
+	if _, err := io.ReadFull(hkdf.Expand(sha256.New, secret, info), out); err != nil {
+		return nil, fmt.Errorf("pqcratchet: exporter HKDF: %w", err)
+	}
+	return out, nil
+}
+
 // EncryptMessage encrypts plaintext, advancing the ratchet if necessary.
 func (s *Session) EncryptMessage(plaintext []byte) (*EncryptResult, error) {
 	return s.encryptMessage(plaintext, rand.Reader)
@@ -656,9 +775,9 @@ func (s *Session) restore(snap *ratchetSnapshot) {
 // Security ordering:
 //  1. Snapshot session state (so we can roll back on auth failure).
 //  2. Speculatively derive message keys (advances ratchet in the snapshot copy).
-//  3. Verify HMAC over (AD || initiatorSigningKey || responderSigningKey || messageRaw).
-//     AD = Encode(IKA) || Encode(IKB) per X3DH spec §3.3 — binds the MAC to
-//     the specific session identity keys. Initiator and responder keys are
+//  3. Verify HMAC over (WireVersion || AD || initiatorSigningKey || responderSigningKey || messageRaw).
+//     AD = Encode(IKA) || Encode(IKB) || TranscriptHash binds the MAC to the
+//     session identity keys and to this handshake. Initiator and responder keys are
 //     stable session roles so both sides compute the same input regardless of
 //     who is currently sending.
 //     messageRaw already contains the RatchetCT bytes (the MessageProtocol wire
@@ -697,7 +816,7 @@ func (s *Session) DecryptSignedMessage(msg *ParsedMessageSigned) ([]byte, error)
 
 	// Step 3: verify HMAC before any use of derived keys or decryption.
 	//
-	// Signed data layout: AD || initiatorSigningKey || responderSigningKey || messageRaw
+	// Signed data layout: WireVersion || AD || initiatorSigningKey || responderSigningKey || messageRaw
 	//
 	// Initiator and responder roles are stable session properties, so both
 	// sides compute the same byte string regardless of who is currently
@@ -706,13 +825,7 @@ func (s *Session) DecryptSignedMessage(msg *ParsedMessageSigned) ([]byte, error)
 	//
 	// messageRaw already contains RatchetCT verbatim (HasRatchetCT + bytes),
 	// so no separate binding of the KEM ciphertext is needed.
-	signedData := make([]byte, 0,
-		len(s.AD)+len(s.InitiatorSigningKeyBytes)+len(s.ResponderSigningKeyBytes)+len(msg.MessageRaw))
-	signedData = append(signedData, s.AD...)
-	signedData = append(signedData, s.InitiatorSigningKeyBytes...)
-	signedData = append(signedData, s.ResponderSigningKeyBytes...)
-	signedData = append(signedData, msg.MessageRaw...)
-	expected := hmacSHA256(mk.HMACKey, signedData)
+	expected := hmacSHA256(mk.HMACKey, buildHMACInput(s.AD, s.InitiatorSigningKeyBytes, s.ResponderSigningKeyBytes, msg.MessageRaw))
 
 	if subtle.ConstantTimeCompare(expected, msg.Signature) != 1 {
 		// Roll back: unauthenticated input must not advance ratchet state.
@@ -860,6 +973,7 @@ func (r *KEMInitiatorResult) ToPreKeyMessageWire(alice *Identity, bundle *PreKey
 		m.HasCT4 = true
 		copy(m.CT4[:], r.CT4[:])
 	}
+	m.SessionContext = cloneBytes(r.SessionContext)
 	copy(m.SigningPub[:], DSAPublicKeyBytes(alice.SigningKey.Public))
 	copy(m.ExchangeKeySig[:], alice.ExchangeKeySignature)
 	copy(m.ExchangePub[:], alice.ExchangeKey.Public[:])

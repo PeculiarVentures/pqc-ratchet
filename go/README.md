@@ -146,6 +146,31 @@ fmt.Println(string(plaintext)) // "hello"
 > release as `Seal`/`Open`. See `session.go` and the test helper `buildPKMWire` in
 > `ratchet_test.go` for the full low-level construction if needed.
 
+### Binding a session to its context
+
+When a relay or other intermediary carries the handshake, bind the application's session
+to it. The context is signed by the initiator, delivered in the PreKeyMessage, and mixed
+into every key. The responder must check it before acting.
+
+```go
+ctx := []byte(`{"sid":"s_123","origin":"https://payroll.example","ops":["x509/sign"]}`)
+aliceSess, result, _ := pqc.CreateSessionInitiatorWithContext(aliceID, bundle, ctx)
+// ... deliver result.ToPreKeyMessageWire(aliceID, bundle) ...
+bobSess, _ := pqc.CreateSessionResponder(bobID, pkm)
+if !bytes.Equal(bobSess.SessionContext, expectedCtx) {
+	// reject: the initiator signed a different session
+}
+
+// Keying material both peers share, for example a channel binding value
+// that an approver signs together with the operation it approves.
+cb, _ := bobSess.ExportKeyingMaterial("goodkey approval", opDigest, 32)
+```
+
+A PreKeyMessage is also bound to the responder and pre-keys it was built for, so presenting
+it to a different identity, or rewriting its pre-key indexes, fails signature verification
+without consuming a one-time pre-key. See DESIGN.md, "Session context and
+channel binding".
+
 For advanced use — custom transports, server-side batching, audit tooling — the
 lower-level `EncryptMessage()` / `DecryptSignedMessage()` + `Marshal*` functions
 are also exported.

@@ -35,27 +35,30 @@
 //	(ct1, ss1) = KEM.Encap(SPK_B)              // signed pre-key → mutual auth + FS
 //	(ct2, ss2) = KEM.Encap(IK_B.ex)            // identity exchange key → mutual auth
 //	EK_A       = KEM.KeyGen()                  // ephemeral KEM keypair
-//	SK = HKDF(0xFF×32 || ss1 || ss2)           // without OPK
+//	[(ct4, ss3) = KEM.Encap(OPK_B)]           // one-time pre-key → forward secrecy
+//	T  = signed transcript: version, protocol id, session context,
+//	     Bob's keys, IK_A.ex, ct1, ct2, EK_A.pub, [ct4]
+//	th = SHA-256(T)
+//	RK || XS = HKDF(0xFF×32 || ss1 || ss2 [|| ss3], salt=th)
 //
-//	With one-time pre-key:
-//	(ct4, ss3) = KEM.Encap(OPK_B)             // one-time pre-key → forward secrecy
-//	SK = HKDF(0xFF×32 || ss1 || ss2 || ss3)
+//	Sent to Bob: ctx || IK_A || EK_A.pub || ct1 || ct2 [|| ct4] || Sig(IK_A.sig, T)
 //
-//	Sent to Bob: IK_A || EK_A.pub || ct1 || ct2 [|| ct4] || Sig(IK_A.sig, transcript)
-//
-// Bob (responder) decapsulates:
+// Bob (responder) rebuilds T from the message and his own keys, verifies the
+// signature, then decapsulates:
 //
 //	ss1 = KEM.Decap(SPK_B.sk, ct1)
 //	ss2 = KEM.Decap(IK_B.ex.sk, ct2)
 //	[ss3 = KEM.Decap(OPK_B.sk, ct4)]
-//	SK  = HKDF(0xFF×32 || ss1 || ss2 [|| ss3])
+//	RK || XS = HKDF(0xFF×32 || ss1 || ss2 [|| ss3], salt=th)
 //
-// Associated Data (per X3DH spec §3.3):
+// Associated Data:
 //
-//	AD = Encode(IK_A.ex) || Encode(IK_B.ex)
+//	AD = Encode(IK_A.ex) || Encode(IK_B.ex) || th
 //
-// AD is mixed into every message HMAC to bind message authentication to the
-// session identity keys.
+// AD is the GCM additional data and is mixed into every message HMAC, which
+// binds message authentication to the session identity keys and to this
+// handshake. XS backs Session.ExportKeyingMaterial. See DESIGN.md, "Session
+// context and channel binding".
 //
 // Authentication vs. deniability tradeoff:
 //
@@ -181,6 +184,8 @@ var (
 	ErrNoRatchetKey      = errors.New("pqcratchet: no remote ratchet key set")
 	ErrMissingSigningKey  = errors.New("pqcratchet: session missing signing keys for HMAC verification")
 	ErrSkippedKeyCapacity = errors.New("pqcratchet: skipped key cache full — some out-of-order messages may be unrecoverable")
+	ErrSessionContextTooLarge = errors.New("pqcratchet: session context exceeds MaxSessionContextSize")
+	ErrExporterLength     = errors.New("pqcratchet: exporter length must be between 1 and 8160 bytes")
 )
 
 // MaxSkip is the maximum number of message keys to cache for out-of-order delivery.
@@ -206,11 +211,25 @@ const maxOldEpochSkip = 50
 // infoHybridKEM is also used inside Encapsulate/Decapsulate — interop
 // implementers must use the same string.
 const (
-	_infoKEMInit     = "pqcratchet/v1/KEMInit"
+	_infoKEMInit     = "pqcratchet/v2/KEMInit"
 	_infoRatchet     = "pqcratchet/v1/Ratchet"
 	_infoMessageKeys = "pqcratchet/v1/MessageKeys"
 	_infoHybridKEM   = "pqcratchet/v1/HybridKEM"
+	_infoExporter    = "pqcratchet/v2/Exporter"
+
+	// transcriptLabel prefixes the X3DH transcript that the initiator signs.
+	transcriptLabel = "pqcratchet/v2/X3DH"
 )
+
+// ProtocolID is the protocol identifier that negotiation layers advertise for
+// this library (for example in the GoodKey ratchet negotiation spec). It is
+// bound into the signed X3DH transcript, so a session established under one
+// protocol identifier cannot be presented as another.
+const ProtocolID = "pqc-ratchet-0"
+
+// MaxSessionContextSize bounds the application-supplied session context that
+// is carried in the PreKeyMessage and bound into the X3DH transcript.
+const MaxSessionContextSize = 4096
 
 // infoSlices are the canonical []byte forms of the info constants.
 // They are initialised once and never modified.
@@ -219,6 +238,7 @@ var (
 	infoRatchet     = []byte(_infoRatchet)
 	infoMessageKeys = []byte(_infoMessageKeys)
 	infoHybridKEM   = []byte(_infoHybridKEM)
+	infoExporter    = []byte(_infoExporter)
 )
 
 // Chain KDF diversifiers for the symmetric ratchet.

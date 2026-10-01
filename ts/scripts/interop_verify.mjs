@@ -69,6 +69,7 @@ const pkmWire  = unmarshalPreKeyMessageWire(pkmBytes);
 const NO_OPK = 0xFFFFFFFF;
 const preKeyMessage = {
   registrationId:      pkmWire.registrationID,
+  sessionContext:      pkmWire.sessionContext,
   identitySigningPub:  pkmWire.signingPub,
   identityExchangePub: pkmWire.exchangePub,
   exchangeKeySig:      pkmWire.exchangeKeySig,  // Alice's sig over her exchange key
@@ -145,5 +146,19 @@ for (const pt of replyPlaintexts) {
   console.log(`OK   encrypted reply: "${pt}"`);
 }
 
-writeFileSync(replyPath, JSON.stringify({ tsToGoMessages: replyWires, replyPlaintexts }, null, 2));
+// ─── Report session binding values for Go to compare ─────────────────────────
+const exporterHex = fixture.exporterLabel
+  ? toHex(await bobSess.exportKeyingMaterial(
+      fixture.exporterLabel, fromHex(fixture.exporterContextHex ?? ""), fixture.exporterLength))
+  : "";
+console.log(`OK   session context ${toHex(bobSess.sessionContext)}`);
+console.log(`OK   transcript hash ${toHex(bobSess.transcriptHash)}`);
+
+writeFileSync(replyPath, JSON.stringify({
+  tsToGoMessages: replyWires,
+  replyPlaintexts,
+  sessionContextHex: toHex(bobSess.sessionContext),
+  transcriptHashHex: toHex(bobSess.transcriptHash),
+  exporterHex,
+}, null, 2));
 console.log(`OK   wrote reply: ${replyPath}`);

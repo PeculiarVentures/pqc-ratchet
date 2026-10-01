@@ -293,6 +293,7 @@ func buildPKMWire(alice *pqc.Identity, bundle *pqc.PreKeyBundle, result *pqc.KEM
 		HasCT4:             hasCT4,
 		CT4:                ct4,
 		InitiatorSig:       initiatorSig,
+		SessionContext:     result.SessionContext,
 	}
 }
 
