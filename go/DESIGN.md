@@ -245,9 +245,41 @@ If only the first message of an epoch carries the ciphertext, out-of-order deliv
 a later message arriving before the first cannot initialise the receiving chain. To enable
 out-of-order delivery, every message in a sending epoch carries `EpochRatchetCT` — the
 ciphertext that opened the epoch. This adds 1,120 bytes per non-first message in an epoch.
-That is the cost of out-of-order delivery in a KEM ratchet; there is no cheaper option that
-preserves the same delivery guarantee without a `PN` (previous chain length) field or
-buffering.
+Among designs that complete a full KEM step on every direction change, carrying the
+ciphertext is the simplest way to keep out-of-order delivery without a `PN` (previous chain
+length) field or buffering. Sparse ratchets reduce the per-message cost further by giving up
+that per-turn step; the next section explains why this library does not use one.
+
+### Why not a sparse ratchet (Signal's SPQR)
+
+Signal's SPQR ("Sparse Post-Quantum Ratchet", github.com/signalapp/SparsePostQuantumRatchet)
+replaces the public-key ratchet step with the ML-KEM Braid. It splits each ML-KEM-768
+encapsulation key and ciphertext into erasure-coded chunks of about 32 bytes and sends one
+chunk per message, so per-message overhead drops from about 2.3 KB to a few dozen bytes and
+lost or reordered chunks are tolerated. Signal runs it alongside the classical X25519 Double
+Ratchet and combines the two message keys.
+
+That trade suits long-lived, chatty, lossy messaging. It is a poor fit for the traffic this
+library was built for.
+
+- **Sessions are short and strictly request/response.** A sparse ratchet needs many messages
+  to complete one PQ epoch. A session of a few frames would never finish one, so all of its
+  post-quantum protection would come from the initial handshake. This ratchet completes a
+  full hybrid PQ step on every direction change, which in request/response traffic is every
+  message.
+- **The transports are ordered and lossless.** gRPC streams, WebSockets and a buffering relay
+  deliver in order and do not drop messages, so the erasure coding would never be exercised.
+- **Bandwidth is not the constraint.** A few kilobytes per frame is small next to the
+  certificates and ML-DSA signatures these sessions carry.
+
+There are practical obstacles as well. SPQR is AGPL-3.0 and this library is MIT. It is a
+Rust crate, and using it would need FFI in Go and WASM in the browser, while a port would
+lose the formal verification that is its main strength. Its chunking relies on an
+incremental ML-KEM interface that neither circl nor @noble/post-quantum provides.
+
+If this library is later carried over a constrained or lossy link (for example NFC or BLE),
+a clean-room implementation of the braid from Signal's published specification could replace
+the ratchet step behind a new wire version, keeping the handshake, framing and pairing code.
 
 ### `KDF_RK` implementation
 
@@ -389,9 +421,10 @@ for a baseline of 2,336 bytes of PQC overhead per message before any plaintext. 
 PreKeyMessage (session establishment) additionally carries the X3DH ciphertexts and the
 initiator signature, totalling approximately 9–10 KB depending on OPK usage.
 
-These sizes are a direct consequence of the NIST PQC standards and cannot be reduced
-without switching to smaller parameter sets (which reduce security margins) or using
-lattice-based compression schemes outside the current standards.
+These sizes are a direct consequence of the NIST PQC standards. They can be reduced by
+switching to smaller parameter sets (which reduce security margins), by using lattice-based
+compression schemes outside the current standards, or by amortising the ratchet's key and
+ciphertext across many messages as a sparse ratchet does (see "Why not a sparse ratchet").
 
 ---
 
